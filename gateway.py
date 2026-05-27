@@ -2399,11 +2399,14 @@ class GatewayService:
 
     def _body_chain_rank(self, moment: dict) -> tuple[int, float]:
         fields = self._moment_search_fields(moment)
+        is_intimate = any(term in fields for term in INTIMATE_BODY_TERMS)
+        matches_embodied = any(term.lower() in fields for term in BODY_CHAIN_PRIORITIES[0][1])
+        matches_touch = any(term.lower() in fields for term in BODY_CHAIN_PRIORITIES[2][1])
+        if is_intimate and not (matches_embodied or matches_touch):
+            return len(BODY_CHAIN_PRIORITIES), -float(moment.get("score") or 0.0)
         for index, (_, terms) in enumerate(BODY_CHAIN_PRIORITIES):
             if any(term.lower() in fields for term in terms):
                 return index, -float(moment.get("score") or 0.0)
-        if any(term in fields for term in INTIMATE_BODY_TERMS):
-            return len(BODY_CHAIN_PRIORITIES) + 1, -float(moment.get("score") or 0.0)
         return 99, -float(moment.get("score") or 0.0)
 
     async def _build_diffused_memory_block(

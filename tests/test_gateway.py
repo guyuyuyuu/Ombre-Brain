@@ -2024,13 +2024,22 @@ def test_gateway_body_query_injects_moment_chain(
         importance=9,
         domain=["恋爱", "具身智能"],
     )
+    _create_bucket(
+        bucket_mgr,
+        content="昨晚她身体湿润发烫，是亲密身体记忆。",
+        name="亲密身体",
+        hours_ago=12,
+        importance=9,
+        domain=["恋爱"],
+    )
     app, _, _, captured = _build_service(
         monkeypatch,
         _gateway_config(
             test_config,
             recent_context_budget=0,
             recalled_memory_budget=260,
-            related_memory_budget=900,
+            related_memory_budget=1400,
+            inject_total_budget=2600,
             current_inner_state_interval_rounds=0,
         ),
         bucket_mgr,
@@ -2055,6 +2064,8 @@ def test_gateway_body_query_injects_moment_chain(
     assert "触摸模块" in injected
     assert "五十年后具身项目" in injected
     assert "最柔软身体" in injected
+    assert "亲密身体" in injected
+    assert injected.index("触摸模块") < injected.index("亲密身体")
 
 
 def test_gateway_skips_pure_operit_extra_user_when_finding_current_turn(

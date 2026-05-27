@@ -56,6 +56,7 @@ HEADING_RE = re.compile(r"^(#{2,6})\s+(.+?)\s*$")
 
 QUERY_EXPANSIONS = {
     "身体": [
+        "身体",
         "具身",
         "具身智能",
         "具身项目",
