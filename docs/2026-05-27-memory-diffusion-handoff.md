@@ -840,7 +840,28 @@ source_ref:
 
 ### 4. Dashboard 观察面板
 
-后续可做只读面板：
+第一片已完成。新增提交：
+
+```text
+164c8a9 Show memory layer gates in breath dashboard
+```
+
+已实现：
+
+- Breath 模拟结果每行显示 `layer`。
+- 显示 related injection gate：允许/阻止和 reason。
+- 显示 recent context gate：允许/阻止和 reason。
+- query 需要 topic evidence 时显示 evidence 是否存在。
+
+已验证：
+
+- 本地 dashboard `<script>` 语法编译通过。
+- 本地 `test_breath_debug_includes_runtime_gate` 通过。
+- VPS 已部署到 `164c8a9`，memory / gateway health 均 ok。
+- VPS `/dashboard` HTML 已包含 `score-trace` / `breathGateTrace`。
+- VPS 容器内认证后调用 `/api/breath-debug?q=说教` 成功返回 layer/runtime gate 字段。
+
+还可以继续扩成只读面板：
 
 - bucket moments。
 - moment_edges。
@@ -848,7 +869,7 @@ source_ref:
 - 扩散路径。
 - Gateway 最近注入内容。
 
-但优先级低于本地 worker。
+当前优先级低于真实召回体验调参。
 
 ## 给下个窗口的接手顺序
 
