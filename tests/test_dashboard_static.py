@@ -39,6 +39,18 @@ def test_dashboard_bucket_detail_loads_moment_diagnostics():
     assert ".detail-moments" in html
 
 
+def test_dashboard_breath_debug_loads_diffusion_paths():
+    html = Path("dashboard.html").read_text(encoding="utf-8")
+    breath_block = html.split("async function runBreathDebug()", 1)[1].split("function breathGateTrace", 1)[0]
+
+    assert 'id="diffusion-results"' in html
+    assert "loadDiffusionDebug(query);" in breath_block
+    assert "BASE + '/api/diffusion-debug?q='" in html
+    assert "function renderDiffusionDebug(data)" in html
+    assert "function renderDiffusionRow(item, index, kind)" in html
+    assert ".diffusion-panel" in html
+
+
 def test_dashboard_exposes_gateway_memory_cooldown_settings():
     html = Path("dashboard.html").read_text(encoding="utf-8")
 

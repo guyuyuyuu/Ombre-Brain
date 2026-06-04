@@ -475,6 +475,38 @@ async def test_api_moments_returns_bucket_layer_and_gate_debug(monkeypatch, buck
 
 
 @pytest.mark.asyncio
+async def test_api_diffusion_debug_returns_seed_gate_payload(monkeypatch, bucket_mgr, test_config):
+    import server
+    from memory_edges import MemoryEdgeStore
+
+    bucket_id = await bucket_mgr.create(
+        content="小雨喜欢蓝色，这条记忆可以作为扩散 seed。",
+        name="蓝色偏好",
+        tags=["preference"],
+        domain=["恋爱"],
+        importance=7,
+    )
+    monkeypatch.setattr(server, "bucket_mgr", bucket_mgr)
+    monkeypatch.setattr(server, "embedding_engine", DummyEmbeddingEngine())
+    monkeypatch.setattr(server, "memory_edge_store", MemoryEdgeStore(test_config))
+    monkeypatch.setattr(server, "config", {**test_config, "node_facets": {"enabled": False}})
+    monkeypatch.setattr(server, "_require_dashboard_auth", lambda request: None)
+
+    response = await server.api_diffusion_debug(
+        DummyRequest(query_params={"q": "蓝色", "max_seeds": "2", "max_hits": "2"})
+    )
+    payload = json.loads(response.body)
+
+    assert response.status_code == 200
+    assert payload["status"] == "ok"
+    assert payload["query"] == "蓝色"
+    assert payload["node_facets_enabled"] is False
+    assert payload["options"]["top_k"] == 2
+    assert payload["seeds"][0]["bucket_id"] == bucket_id
+    assert payload["seeds"][0]["runtime_gate"]["related_injection"]["allowed"] is True
+
+
+@pytest.mark.asyncio
 async def test_trace_rejects_favorite_without_reason(monkeypatch, bucket_mgr, decay_eng):
     import server
 

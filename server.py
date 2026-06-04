@@ -5515,6 +5515,34 @@ async def api_breath_debug(request):
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
+@mcp.custom_route("/api/diffusion-debug", methods=["GET"])
+async def api_diffusion_debug(request):
+    """Debug endpoint: inspect bucket-level diffusion paths for a query."""
+    from starlette.responses import JSONResponse
+    err = _require_dashboard_auth(request)
+    if err:
+        return err
+
+    query = request.query_params.get("q", "")
+    max_seeds = _int_between(request.query_params.get("max_seeds"), 3, 1, 20)
+    max_hits = _int_between(request.query_params.get("max_hits"), 5, 0, 20)
+    edge_min_confidence = _float_between(
+        request.query_params.get("edge_min_confidence"),
+        0.55,
+        0.0,
+        1.0,
+    )
+    payload = await inspect_diffusion(
+        query=query,
+        max_seeds=max_seeds,
+        max_hits=max_hits,
+        edge_min_confidence=edge_min_confidence,
+    )
+    if payload.get("status") == "error":
+        return JSONResponse(payload, status_code=400)
+    return JSONResponse(payload)
+
+
 @mcp.custom_route("/api/reflection/run", methods=["POST"])
 async def api_reflection_run(request):
     """Run daily reflection from dashboard or trusted local callers; weekly obeys reflection.weekly_enabled."""

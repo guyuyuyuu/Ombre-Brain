@@ -867,6 +867,12 @@ source_ref:
 - 新增 `/api/moments?bucket_id=...&limit=...`，复用 `inspect_moments` 的 payload，显示 bucket layer、moment layer、direct/related/context gate 和源正文行号。
 - 该面板只刷新 `${state_dir}/memory_moments.sqlite` 观察索引，不修改 bucket，不改变 recall / gateway 注入行为。
 
+第三片已完成。新增：
+
+- Breath 模拟页新增 `扩散路径` 面板。
+- 新增 `/api/diffusion-debug?q=...`，复用 `inspect_diffusion` 的 payload，显示 bucket-level seeds / hits / paths / gate。
+- 这仍是 bucket-level diffusion 诊断，不等于完整 moment graph 观察面板。
+
 还可以继续扩成只读面板：
 
 - moment_edges。

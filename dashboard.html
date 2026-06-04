@@ -1077,6 +1077,57 @@
   .score-final { font-size: 14px; font-weight: 600; text-align: right; }
   .score-pass { color: var(--positive); }
   .score-fail { color: var(--text-light); }
+  .diffusion-panel {
+    margin-top: 18px;
+    padding: 18px 20px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    box-shadow: 4px 4px 10px var(--shadow-dark-subtle), -4px -4px 10px var(--shadow-light);
+  }
+  .diffusion-panel h3 {
+    color: var(--accent);
+    font-size: 14px;
+    font-weight: 500;
+    margin: 0 0 12px;
+  }
+  .diffusion-columns {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 14px;
+  }
+  .diffusion-section-title {
+    color: var(--text-light);
+    font-size: 11px;
+    margin: 0 0 8px;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+  }
+  .diffusion-row {
+    padding: 10px 12px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    margin-bottom: 8px;
+    font-size: 12px;
+    line-height: 1.6;
+    background: var(--surface-solid);
+  }
+  .diffusion-name {
+    color: var(--text);
+    font-weight: 500;
+    margin-bottom: 4px;
+  }
+  .diffusion-path {
+    color: var(--text-dim);
+    font-size: 11px;
+    margin-top: 6px;
+    white-space: pre-wrap;
+  }
+  .diffusion-warning {
+    color: var(--warning);
+    font-size: 11px;
+    margin-top: 8px;
+  }
 
   .breath-flow {
     display: flex;
@@ -1358,6 +1409,7 @@
     .persona-meter-row { grid-template-columns: 108px 1fr 38px; }
     .persona-event { grid-template-columns: 1fr; }
     .persona-event-time { white-space: normal; }
+    .diffusion-columns { grid-template-columns: 1fr; }
     .reflection-toolbar { align-items: flex-start; flex-direction: column; }
     .reflection-board { grid-template-columns: 1fr; }
     .reflection-day-panel { height: auto; max-height: none; }
@@ -1421,6 +1473,7 @@
   <div id="breath-results">
     <div class="loading">输入 query 后点击「模拟 Breath」查看评分链路</div>
   </div>
+  <div id="diffusion-results" class="diffusion-panel" style="display:none"></div>
 </div>
 
 <div class="content" id="reflection-view" style="display:none">
@@ -3118,8 +3171,15 @@ async function runBreathDebug() {
   var arousal = document.getElementById('breath-arousal').value;
   var results = document.getElementById('breath-results');
   var info = document.getElementById('breath-info');
+  var diffusion = document.getElementById('diffusion-results');
 
   results.innerHTML = '<div class="loading">计算中…</div>';
+  if (diffusion) {
+    diffusion.style.display = '';
+    diffusion.innerHTML = query
+      ? '<h3>扩散路径</h3><div class="loading">读取 diffusion debug…</div>'
+      : '<h3>扩散路径</h3><div class="loading">输入 query 后查看 seeds / hits / paths。</div>';
+  }
 
   var url = BASE + '/api/breath-debug?q=' + encodeURIComponent(query);
   if (valence) url += '&valence=' + valence;
@@ -3148,6 +3208,8 @@ async function runBreathDebug() {
       ' &nbsp;|&nbsp; 候选=<code>' + data.total_candidates + '</code> 桶' +
       ' → 通过=<code>' + data.passed_count + '</code> 桶' +
       (query ? '' : ' &nbsp;|&nbsp; <em>未输入 query，topic 分数全为 0</em>');
+
+    if (query) loadDiffusionDebug(query);
 
     if (!data.results.length) {
       results.innerHTML = '<div class="loading">无结果</div>';
@@ -3190,6 +3252,83 @@ async function runBreathDebug() {
   } catch (e) {
     results.innerHTML = '<div class="loading">请求失败: ' + esc(e.message) + '</div>';
   }
+}
+
+async function loadDiffusionDebug(query) {
+  var target = document.getElementById('diffusion-results');
+  if (!target) return;
+  try {
+    var url = BASE + '/api/diffusion-debug?q=' + encodeURIComponent(query);
+    var res = await authFetch(url);
+    if (!res) return;
+    var data = await res.json();
+    target.innerHTML = renderDiffusionDebug(data);
+  } catch (e) {
+    target.innerHTML = '<h3>扩散路径</h3><div class="loading">加载失败: ' + esc(e.message) + '</div>';
+  }
+}
+
+function renderDiffusionDebug(data) {
+  if (!data || data.status !== 'ok') {
+    return '<h3>扩散路径</h3><div class="loading">无扩散诊断数据</div>';
+  }
+  var seeds = Array.isArray(data.seeds) ? data.seeds : [];
+  var hits = Array.isArray(data.hits) ? data.hits : [];
+  var options = data.options || {};
+  var warnings = Array.isArray(data.warnings) ? data.warnings : [];
+  var summary = renderMomentChips([
+    { text: seeds.length + ' seeds' },
+    { text: hits.length + ' hits' },
+    { text: 'edge ≥ ' + (options.edge_min_confidence != null ? options.edge_min_confidence : '—') },
+    { text: 'max hops ' + (options.max_hops != null ? options.max_hops : '—') },
+  ]);
+  var body = '<div class="diffusion-columns">' +
+    renderDiffusionSection('Seeds', seeds, 'seed') +
+    renderDiffusionSection('Hits', hits, 'hit') +
+  '</div>';
+  var warningHtml = warnings.length
+    ? '<div class="diffusion-warning">' + esc(warnings.join(' · ')) + '</div>'
+    : '';
+  return '<h3>扩散路径</h3>' + summary + body + warningHtml;
+}
+
+function renderDiffusionSection(title, items, kind) {
+  if (!items.length) {
+    return '<div><div class="diffusion-section-title">' + esc(title) + '</div><div class="loading">无</div></div>';
+  }
+  return '<div><div class="diffusion-section-title">' + esc(title) + '</div>' +
+    items.map(function(item, index) { return renderDiffusionRow(item, index, kind); }).join('') +
+  '</div>';
+}
+
+function renderDiffusionRow(item, index, kind) {
+  var row = item || {};
+  var runtime = row.runtime_gate || {};
+  var related = runtime.related_injection || runtime.related_target || {};
+  var chips = [
+    { text: (kind === 'seed' ? 'seed ' : 'hit ') + '#' + (index + 1) },
+    { text: 'layer ' + ((row.layer_debug && row.layer_debug.layer) || runtime.layer || 'unknown') },
+  ];
+  if (row.seed_score != null) chips.push({ text: 'seed score ' + Number(row.seed_score).toFixed(2) });
+  if (row.score != null) chips.push({ text: 'activation ' + Number(row.score).toFixed(2) });
+  if (related.reason) {
+    chips.push({
+      text: 'related ' + (related.allowed ? 'yes' : 'no') + ' · ' + related.reason,
+      state: related.allowed ? 'allow' : 'block',
+    });
+  }
+  var path = row.path ? '<div class="diffusion-path">path: ' + esc(row.path) + '</div>' : '';
+  if (!path && row.path_ids && row.path_ids.length) {
+    path = '<div class="diffusion-path">path ids: ' + esc(row.path_ids.join(' → ')) + '</div>';
+  }
+  if (row.caution) {
+    chips.push({ text: 'caution', state: 'block' });
+  }
+  return '<div class="diffusion-row">' +
+    '<div class="diffusion-name">' + esc(row.name || row.bucket_id || 'unknown') + '</div>' +
+    renderMomentChips(chips) +
+    path +
+  '</div>';
 }
 
 function breathGateTrace(row) {
