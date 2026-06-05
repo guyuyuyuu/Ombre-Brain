@@ -3660,6 +3660,7 @@ def _inspect_moment_payload(
             moment,
             allowed_root=str(config.get("buckets_dir") or ""),
             max_chars=760,
+            context_lines=0,
         )
         if source_window:
             payload["source_window"] = source_window

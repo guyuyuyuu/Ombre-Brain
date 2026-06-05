@@ -477,6 +477,45 @@ async def test_api_moments_returns_bucket_layer_and_gate_debug(monkeypatch, buck
 
 
 @pytest.mark.asyncio
+async def test_api_moments_source_window_stays_inside_section(monkeypatch, bucket_mgr, test_config):
+    import server
+    from memory_moments import MemoryMomentStore
+
+    bucket_id = await bucket_mgr.create(
+        content=(
+            "开头正文。\n\n"
+            "### 喜欢它的原因\n"
+            "它承载了偶然变成必然的起点。\n\n"
+            "### affect_anchor\n"
+            "> Cmaj7 -> G/B\n"
+        ),
+        name="长桶窗口",
+        tags=["haven_favorite"],
+        domain=["恋爱"],
+        importance=7,
+    )
+    moment_store = MemoryMomentStore(test_config)
+    monkeypatch.setattr(server, "bucket_mgr", bucket_mgr)
+    monkeypatch.setattr(server, "memory_moment_store", moment_store)
+    monkeypatch.setattr(server, "config", test_config)
+    monkeypatch.setattr(server, "_require_dashboard_auth", lambda request: None)
+
+    response = await server.api_moments(
+        DummyRequest(query_params={"bucket_id": bucket_id, "limit": "5"})
+    )
+    payload = json.loads(response.body)
+    favorite = next(moment for moment in payload["moments"] if moment["section"] == "favorite_reason")
+    anchor = next(moment for moment in payload["moments"] if moment["section"] == "affect_anchor")
+
+    assert "### 喜欢它的原因" in favorite["source_window"]
+    assert "它承载了偶然变成必然的起点。" in favorite["source_window"]
+    assert "开头正文" not in favorite["source_window"]
+    assert "affect_anchor" not in favorite["source_window"]
+    assert "### affect_anchor" in anchor["source_window"]
+    assert "喜欢它的原因" not in anchor["source_window"]
+
+
+@pytest.mark.asyncio
 async def test_api_diffusion_debug_returns_seed_gate_payload(monkeypatch, bucket_mgr, test_config):
     import server
     from memory_edges import MemoryEdgeStore

@@ -1000,5 +1000,8 @@ def _markdown_body_start_line(text: str) -> int:
         return 1
     for index, line in enumerate(lines[1:], start=2):
         if line.strip() == "---":
-            return index + 1
+            body_start = index + 1
+            while body_start <= len(lines) and not lines[body_start - 1].strip():
+                body_start += 1
+            return max(1, body_start)
     return 1

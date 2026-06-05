@@ -226,9 +226,11 @@ def test_bucket_manager_loads_content_start_line(test_config):
     bucket_path.write_text(frontmatter.dumps(post), encoding="utf-8")
 
     bucket = bucket_mgr._load_bucket(str(bucket_path))
+    lines = bucket_path.read_text(encoding="utf-8").splitlines()
 
     assert bucket["path"] == str(bucket_path)
     assert bucket["content_start_line"] > 1
+    assert lines[bucket["content_start_line"] - 1] == "正文第一行"
 
 
 def test_favorite_tags_and_affect_anchor_are_preserved_as_bucket_temperature():
