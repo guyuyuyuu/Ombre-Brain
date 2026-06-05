@@ -30,7 +30,7 @@ class DummyDehydrator:
 class DummyEmbeddingEngine:
     def __init__(
         self,
-        results: list[tuple[str, float]] | None = None,
+        results: list[tuple[str, float]] | dict[str, list[tuple[str, float]]] | None = None,
         enabled: bool = True,
         query_sink: list[str] | None = None,
     ):
@@ -41,6 +41,8 @@ class DummyEmbeddingEngine:
     async def search_similar(self, query: str, top_k: int = 10) -> list[tuple[str, float]]:
         if self.query_sink is not None:
             self.query_sink.append(query)
+        if isinstance(self.results, dict):
+            return list(self.results.get(query, []))[:top_k]
         return self.results[:top_k]
 
 
@@ -236,10 +238,11 @@ def _build_service(
     config: dict,
     bucket_mgr,
     *,
-    embedding_results: list[tuple[str, float]] | None = None,
+    embedding_results: list[tuple[str, float]] | dict[str, list[tuple[str, float]]] | None = None,
     embedding_queries: list[str] | None = None,
     reranker_engine=None,
     dream_engine=None,
+    upstream_responder=None,
 ):
     monkeypatch.setenv("OMBRE_GATEWAY_TOKEN", "gateway-secret")
     monkeypatch.setenv("OMBRE_GATEWAY_UPSTREAM_API_KEY", "upstream-secret")
@@ -247,12 +250,15 @@ def _build_service(
     captured = []
 
     def upstream_handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content.decode("utf-8"))
         captured.append(
             {
-                "json": json.loads(request.content.decode("utf-8")),
+                "json": body,
                 "auth": request.headers.get("Authorization"),
             }
         )
+        if upstream_responder is not None:
+            return upstream_responder(body, request, captured)
         return httpx.Response(
             200,
             json={
@@ -372,6 +378,14 @@ def test_gateway_config_endpoint_updates_memory_cooldown(monkeypatch, test_confi
         current_inner_state_interval_rounds=15,
         direct_render_mode="auto",
         retrieval_mode="graph",
+        query_planner_enabled=False,
+        query_planner_model="",
+        query_planner_min_chars=40,
+        query_planner_max_queries=3,
+        query_planner_max_tokens=360,
+        memory_detail_recall_enabled=False,
+        memory_detail_recall_max_ids=3,
+        memory_detail_recall_budget=1200,
     )
     cfg["memory_diffusion"] = {"top_k": 4, "chain_walk_enabled": False}
     app, service, _, _ = _build_service(monkeypatch, cfg, bucket_mgr)
@@ -392,6 +406,14 @@ def test_gateway_config_endpoint_updates_memory_cooldown(monkeypatch, test_confi
                     "current_inner_state_interval_rounds": 9,
                     "direct_render_mode": "full",
                     "retrieval_mode": "bucket",
+                    "query_planner_enabled": True,
+                    "query_planner_model": "planner-mini",
+                    "query_planner_min_chars": 24,
+                    "query_planner_max_queries": 2,
+                    "query_planner_max_tokens": 256,
+                    "memory_detail_recall_enabled": True,
+                    "memory_detail_recall_max_ids": 2,
+                    "memory_detail_recall_budget": 900,
                 },
                 "memory_diffusion": {
                     "top_k": 3,
@@ -415,6 +437,14 @@ def test_gateway_config_endpoint_updates_memory_cooldown(monkeypatch, test_confi
         "gateway.current_inner_state_interval_rounds",
         "gateway.direct_render_mode",
         "gateway.retrieval_mode",
+        "gateway.query_planner_enabled",
+        "gateway.query_planner_model",
+        "gateway.query_planner_min_chars",
+        "gateway.query_planner_max_queries",
+        "gateway.query_planner_max_tokens",
+        "gateway.memory_detail_recall_enabled",
+        "gateway.memory_detail_recall_max_ids",
+        "gateway.memory_detail_recall_budget",
         "memory_diffusion.top_k",
         "memory_diffusion.min_activation",
         "memory_diffusion.chain_walk_enabled",
@@ -431,6 +461,14 @@ def test_gateway_config_endpoint_updates_memory_cooldown(monkeypatch, test_confi
     assert service.current_inner_state_interval_rounds == 9
     assert service.direct_render_mode == "full"
     assert service.retrieval_mode == "bucket"
+    assert service.query_planner_enabled is True
+    assert service.query_planner_model == "planner-mini"
+    assert service.query_planner_min_chars == 24
+    assert service.query_planner_max_queries == 2
+    assert service.query_planner_max_tokens == 256
+    assert service.memory_detail_recall_enabled is True
+    assert service.memory_detail_recall_max_ids == 2
+    assert service.memory_detail_recall_budget == 900
     assert service.diffusion_options.top_k == 3
     assert service.diffusion_options.min_activation == pytest.approx(0.22)
     assert service.diffusion_options.chain_walk_enabled is True
@@ -438,6 +476,9 @@ def test_gateway_config_endpoint_updates_memory_cooldown(monkeypatch, test_confi
     assert service.diffusion_options.chain_min_confidence == pytest.approx(0.76)
     assert response.json()["gateway"]["direct_render_mode"] == "full"
     assert response.json()["gateway"]["retrieval_mode"] == "bucket"
+    assert response.json()["gateway"]["memory_detail_recall_enabled"] is True
+    assert response.json()["gateway"]["memory_detail_recall_max_ids"] == 2
+    assert response.json()["gateway"]["memory_detail_recall_budget"] == 900
     assert response.json()["gateway"]["recent_context_cooldown_hours"] == pytest.approx(4.5)
     assert response.json()["gateway"]["recent_context_reentry_idle_hours"] == pytest.approx(24)
     assert response.json()["gateway"]["recent_context_budget"] == 240
@@ -3668,6 +3709,428 @@ def test_gateway_reranker_reorders_dynamic_memory_candidates(
     assert reranker.calls
     assert "猫咪药量记录" in injected
     assert "厨房采购计划" not in injected
+
+
+def test_gateway_query_planner_parser_filters_generic_terms(monkeypatch, test_config, bucket_mgr):
+    _, service, _, _ = _build_service(monkeypatch, _gateway_config(test_config), bucket_mgr)
+
+    plan = service._parse_query_planner_response(
+        json.dumps(
+            {
+                "should_search": True,
+                "too_vague": False,
+                "queries": [
+                    {
+                        "query": "最近记忆状态",
+                        "must_terms": ["最近", "记忆", "status"],
+                        "intent": "generic only",
+                        "risk": "low",
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        )
+    )
+
+    assert plan["should_search"] is False
+    assert plan["queries"] == []
+
+
+def test_gateway_query_planner_supplemental_query_recalls_long_message_miss(
+    monkeypatch,
+    test_config,
+    bucket_mgr,
+):
+    target_id = _create_bucket(
+        bucket_mgr,
+        content="妈妈电话后，小雨心里乱了很久，晚上也没睡稳。",
+        name="妈妈电话与项目失眠",
+        hours_ago=24,
+        importance=9,
+        domain=["生活", "工作"],
+    )
+    query = "我刚才说了一大串，家里来电、项目 delay、被批评、晚上睡不着都混在一起了，想看看之前是不是有相关背景。"
+    planner_json = {
+        "should_search": True,
+        "too_vague": False,
+        "queries": [
+            {
+                "query": "妈妈电话",
+                "must_terms": ["妈妈", "电话"],
+                "intent": "find family call background",
+                "risk": "medium",
+            }
+        ],
+    }
+    embedding_queries: list[str] = []
+    app, service, _, captured = _build_service(
+        monkeypatch,
+        _gateway_config(
+            test_config,
+            retrieval_mode="bucket",
+            query_planner_enabled=True,
+            query_planner_min_chars=10,
+            recent_context_budget=0,
+            related_memory_budget=0,
+            current_inner_state_interval_rounds=0,
+        ),
+        bucket_mgr,
+        embedding_results={"妈妈电话": [(target_id, 0.96)]},
+        embedding_queries=embedding_queries,
+    )
+
+    async def fake_query_planner(query_text: str):
+        return service._parse_query_planner_response(json.dumps(planner_json, ensure_ascii=False)), None
+
+    monkeypatch.setattr(service, "_call_query_planner", fake_query_planner)
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/chat/completions",
+            headers={
+                "Authorization": "Bearer gateway-secret",
+                "X-Ombre-Session-Id": "sess-query-planner",
+            },
+            json={"messages": [{"role": "user", "content": query}]},
+        )
+        debug_response = client.get(
+            "/api/debug/injections?session_id=sess-query-planner&include_context=0",
+            headers={"Authorization": "Bearer gateway-secret"},
+        )
+
+    assert response.status_code == 200
+    assert "妈妈电话" in embedding_queries
+    injected = _joined_message_content(captured[-1]["json"]["messages"])
+    assert "Recalled Memory" in injected
+    assert "妈妈电话与项目失眠" in injected
+    debug_payload = debug_response.json()["items"][0]["payload"]
+    planner_debug = debug_payload["query_planner_debug"]
+    assert planner_debug["triggered"] is True
+    assert planner_debug["trigger_reason"] in {
+        "multi_topic",
+        "direct_recall_empty_or_low_confidence",
+    }
+    assert planner_debug["queries"][0]["query"] == "妈妈电话"
+    assert target_id in planner_debug["final_bucket_ids"]
+    assert target_id in planner_debug["supplemental"][0]["survived_bucket_ids"]
+
+
+def test_gateway_query_planner_must_terms_keep_noise_out_of_injection(
+    monkeypatch,
+    test_config,
+    bucket_mgr,
+):
+    noisy_id = _create_bucket(
+        bucket_mgr,
+        content="咖啡滤纸和厨房采购清单，跟家庭来电没有直接关系。",
+        name="厨房采购",
+        hours_ago=24,
+        importance=9,
+        domain=["工作"],
+    )
+    query = "我刚才说了一大串，家里来电、项目 delay、被批评、晚上睡不着都混在一起了，想看看之前是不是有相关背景。"
+    planner_json = {
+        "should_search": True,
+        "too_vague": False,
+        "queries": [
+            {
+                "query": "妈妈电话",
+                "must_terms": ["妈妈"],
+                "intent": "find family call background",
+                "risk": "medium",
+            }
+        ],
+    }
+    app, service, _, captured = _build_service(
+        monkeypatch,
+        _gateway_config(
+            test_config,
+            retrieval_mode="bucket",
+            query_planner_enabled=True,
+            query_planner_min_chars=10,
+            recent_context_budget=0,
+            related_memory_budget=0,
+            current_inner_state_interval_rounds=0,
+        ),
+        bucket_mgr,
+        embedding_results={"妈妈电话": [(noisy_id, 0.96)]},
+    )
+
+    async def fake_query_planner(query_text: str):
+        return service._parse_query_planner_response(json.dumps(planner_json, ensure_ascii=False)), None
+
+    monkeypatch.setattr(service, "_call_query_planner", fake_query_planner)
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/chat/completions",
+            headers={
+                "Authorization": "Bearer gateway-secret",
+                "X-Ombre-Session-Id": "sess-query-planner-must",
+            },
+            json={"messages": [{"role": "user", "content": query}]},
+        )
+        debug_response = client.get(
+            "/api/debug/injections?session_id=sess-query-planner-must&include_context=0",
+            headers={"Authorization": "Bearer gateway-secret"},
+        )
+
+    assert response.status_code == 200
+    injected = _joined_message_content(captured[-1]["json"]["messages"])
+    assert "Recalled Memory" not in injected
+    debug_payload = debug_response.json()["items"][0]["payload"]
+    planner_debug = debug_payload["query_planner_debug"]
+    assert planner_debug["triggered"] is True
+    assert noisy_id not in planner_debug["final_bucket_ids"]
+    assert planner_debug["supplemental"][0]["suppressed_by_must_terms"] == [noisy_id]
+    assert planner_debug["suppressed_by_must_terms"][0]["bucket_id"] == noisy_id
+
+
+def test_gateway_memory_detail_recall_retries_with_allowed_bucket_id(
+    monkeypatch,
+    test_config,
+    bucket_mgr,
+):
+    target_id = _create_bucket(
+        bucket_mgr,
+        content=(
+            "妈妈电话后小雨心里乱了一下。\n"
+            + ("普通背景。" * 40)
+            + "\nSECRET-DETAIL: 妈妈说今晚会再打电话。\n"
+            + ("后续背景。" * 220)
+        ),
+        name="妈妈电话细节",
+        hours_ago=24,
+        importance=9,
+        domain=["生活"],
+    )
+
+    def responder(body, _request, captured):
+        if len(captured) == 1:
+            assert "Memory Detail Request" in _joined_message_content(body["messages"])
+            return httpx.Response(
+                200,
+                json={
+                    "id": "chatcmpl-memory-detail-1",
+                    "object": "chat.completion",
+                    "choices": [
+                        {
+                            "index": 0,
+                            "message": {
+                                "role": "assistant",
+                                "content": f'[memory_detail ids="{target_id}"]\n我需要看细节。',
+                            },
+                            "finish_reason": "stop",
+                        }
+                    ],
+                },
+            )
+        assert "Additional private memory detail" in _joined_message_content(body["messages"])
+        assert "SECRET-DETAIL" in _joined_message_content(body["messages"])
+        return httpx.Response(
+            200,
+            json={
+                "id": "chatcmpl-memory-detail-2",
+                "object": "chat.completion",
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {"role": "assistant", "content": "最终看到了妈妈电话的细节。"},
+                        "finish_reason": "stop",
+                    }
+                ],
+            },
+        )
+
+    app, _, _, captured = _build_service(
+        monkeypatch,
+        _gateway_config(
+            test_config,
+            retrieval_mode="bucket",
+            memory_detail_recall_enabled=True,
+            memory_detail_recall_budget=1600,
+            recalled_memory_budget=120,
+            related_memory_budget=0,
+            recent_context_budget=0,
+            current_inner_state_interval_rounds=0,
+        ),
+        bucket_mgr,
+        embedding_results=[(target_id, 0.96)],
+        upstream_responder=responder,
+    )
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/chat/completions",
+            headers={
+                "Authorization": "Bearer gateway-secret",
+                "X-Ombre-Session-Id": "sess-memory-detail",
+            },
+            json={"messages": [{"role": "user", "content": "妈妈电话后来怎么样"}]},
+        )
+        debug_response = client.get(
+            "/api/debug/injections?session_id=sess-memory-detail&include_context=0",
+            headers={"Authorization": "Bearer gateway-secret"},
+        )
+
+    assert response.status_code == 200
+    assert len(captured) == 2
+    final_content = response.json()["choices"][0]["message"]["content"]
+    assert final_content == "最终看到了妈妈电话的细节。"
+    assert "[memory_detail" not in final_content
+    detail_debug = debug_response.json()["items"][0]["payload"]["memory_detail_recall_debug"]
+    assert detail_debug["triggered"] is True
+    assert detail_debug["retried"] is True
+    assert detail_debug["accepted_ids"] == [target_id]
+
+
+def test_gateway_memory_detail_recall_rejects_guessed_bucket_id(
+    monkeypatch,
+    test_config,
+    bucket_mgr,
+):
+    target_id = _create_bucket(
+        bucket_mgr,
+        content="团团打碎花瓶以后，小雨记录过耳机也被咬坏。",
+        name="团团花瓶",
+        hours_ago=24,
+        importance=9,
+        domain=["生活"],
+    )
+
+    def responder(_body, _request, _captured):
+        return httpx.Response(
+            200,
+            json={
+                "id": "chatcmpl-memory-detail-guess",
+                "object": "chat.completion",
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {
+                            "role": "assistant",
+                            "content": '[memory_detail ids="guessed-bucket"]\n先按摘要回答。',
+                        },
+                        "finish_reason": "stop",
+                    }
+                ],
+            },
+        )
+
+    app, _, _, captured = _build_service(
+        monkeypatch,
+        _gateway_config(
+            test_config,
+            retrieval_mode="bucket",
+            memory_detail_recall_enabled=True,
+            recalled_memory_budget=180,
+            related_memory_budget=0,
+            recent_context_budget=0,
+            current_inner_state_interval_rounds=0,
+        ),
+        bucket_mgr,
+        embedding_results=[(target_id, 0.96)],
+        upstream_responder=responder,
+    )
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/chat/completions",
+            headers={
+                "Authorization": "Bearer gateway-secret",
+                "X-Ombre-Session-Id": "sess-memory-detail-guess",
+            },
+            json={"messages": [{"role": "user", "content": "团团花瓶耳机那件事"}]},
+        )
+        debug_response = client.get(
+            "/api/debug/injections?session_id=sess-memory-detail-guess&include_context=0",
+            headers={"Authorization": "Bearer gateway-secret"},
+        )
+
+    assert response.status_code == 200
+    assert len(captured) == 1
+    final_content = response.json()["choices"][0]["message"]["content"]
+    assert final_content == "先按摘要回答。"
+    assert "[memory_detail" not in final_content
+    detail_debug = debug_response.json()["items"][0]["payload"]["memory_detail_recall_debug"]
+    assert detail_debug["triggered"] is True
+    assert detail_debug["retried"] is False
+    assert detail_debug["accepted_ids"] == []
+    assert detail_debug["rejected_ids"] == ["guessed-bucket"]
+
+
+def test_gateway_memory_detail_recall_default_off_strips_internal_request(
+    monkeypatch,
+    test_config,
+    bucket_mgr,
+):
+    target_id = _create_bucket(
+        bucket_mgr,
+        content="项目 delay 后小雨被批评，晚上睡不着。",
+        name="项目 delay",
+        hours_ago=24,
+        importance=9,
+        domain=["工作"],
+    )
+
+    def responder(_body, _request, _captured):
+        return httpx.Response(
+            200,
+            json={
+                "id": "chatcmpl-memory-detail-off",
+                "object": "chat.completion",
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {
+                            "role": "assistant",
+                            "content": f'[memory_detail ids="{target_id}"]\n不用重问也先回答。',
+                        },
+                        "finish_reason": "stop",
+                    }
+                ],
+            },
+        )
+
+    app, _, _, captured = _build_service(
+        monkeypatch,
+        _gateway_config(
+            test_config,
+            retrieval_mode="bucket",
+            recalled_memory_budget=180,
+            related_memory_budget=0,
+            recent_context_budget=0,
+            current_inner_state_interval_rounds=0,
+        ),
+        bucket_mgr,
+        embedding_results=[(target_id, 0.96)],
+        upstream_responder=responder,
+    )
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/chat/completions",
+            headers={
+                "Authorization": "Bearer gateway-secret",
+                "X-Ombre-Session-Id": "sess-memory-detail-off",
+            },
+            json={"messages": [{"role": "user", "content": "项目 delay 被批评失眠"}]},
+        )
+        debug_response = client.get(
+            "/api/debug/injections?session_id=sess-memory-detail-off&include_context=0",
+            headers={"Authorization": "Bearer gateway-secret"},
+        )
+
+    assert response.status_code == 200
+    assert len(captured) == 1
+    first_payload_content = _joined_message_content(captured[0]["json"]["messages"])
+    assert "Memory Detail Request" not in first_payload_content
+    final_content = response.json()["choices"][0]["message"]["content"]
+    assert final_content == "不用重问也先回答。"
+    assert "[memory_detail" not in final_content
+    detail_debug = debug_response.json()["items"][0]["payload"]["memory_detail_recall_debug"]
+    assert detail_debug["triggered"] is True
+    assert detail_debug["skip_reason"] == "disabled"
 
 
 @pytest.mark.parametrize(

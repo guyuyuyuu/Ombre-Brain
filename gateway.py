@@ -74,6 +74,56 @@ from utils import (
 logger = logging.getLogger("ombre_brain.gateway")
 FAVORITE_MEMORY_MARKER = "[[ombre:favorite]]"
 RETRYABLE_UPSTREAM_STATUS_CODES = {401, 403, 429, 500, 502, 503, 504}
+QUERY_PLANNER_GENERIC_TERMS = {
+    "recent",
+    "memory",
+    "context",
+    "current",
+    "remember",
+    "emotion",
+    "status",
+    "thing",
+    "user",
+    "assistant",
+    "最近",
+    "记忆",
+    "上下文",
+    "当前",
+    "现在",
+    "记得",
+    "情绪",
+    "状态",
+    "事情",
+    "用户",
+    "助手",
+    "聊天",
+    "对话",
+}
+MEMORY_DETAIL_REQUEST_RE = re.compile(
+    r"^\s*\[memory_detail\s+ids\s*=\s*([\"'])(?P<ids>[^\"']+)\1\s*\]\s*",
+    re.IGNORECASE,
+)
+QUERY_PLANNER_SYSTEM_PROMPT = """You are Ombre Memory Query Planner.
+Return only strict JSON. Do not write memory. Do not choose final memories.
+Split the user's long mixed message into 1-3 short memory search anchors.
+Each query must be concrete and should preserve names, projects, people, places, or events.
+Each query must include must_terms: concrete words that a candidate memory should contain at least one of.
+Do not include generic terms such as recent, memory, context, current, remember, emotion, status.
+If the message is too vague or has no searchable memory anchor, return should_search=false.
+Schema:
+{
+  "should_search": true,
+  "too_vague": false,
+  "queries": [
+    {
+      "query": "short search anchor",
+      "must_terms": ["concrete", "terms"],
+      "intent": "short reason",
+      "risk": "low|medium|high"
+    }
+  ]
+}
+"""
 EXTERNAL_CONTEXT_ATTACHMENT_RE = re.compile(
     r"<attachment\b[^>]*>[\s\S]*?</attachment>",
     re.IGNORECASE,
@@ -249,6 +299,33 @@ class GatewayService:
             semantic_threshold=self.recall_admission_semantic_score,
             rerank_threshold=self.recall_admission_rerank_score,
         )
+        self.query_planner_enabled = self._bool_config_value(
+            self.gateway_cfg.get("query_planner_enabled"),
+            False,
+        )
+        self.query_planner_model = str(
+            self.gateway_cfg.get("query_planner_model") or self.upstream_default_model or ""
+        ).strip()
+        self.query_planner_min_chars = max(0, int(self.gateway_cfg.get("query_planner_min_chars", 40)))
+        self.query_planner_max_queries = max(1, min(3, int(self.gateway_cfg.get("query_planner_max_queries", 3))))
+        self.query_planner_max_tokens = max(128, int(self.gateway_cfg.get("query_planner_max_tokens", 360)))
+        self.query_planner_score_bonus = self._clamp(
+            float(self.gateway_cfg.get("query_planner_score_bonus", 0.04)),
+            0.0,
+            0.30,
+        )
+        self.memory_detail_recall_enabled = self._bool_config_value(
+            self.gateway_cfg.get("memory_detail_recall_enabled"),
+            False,
+        )
+        self.memory_detail_recall_max_ids = max(
+            1,
+            min(3, int(self.gateway_cfg.get("memory_detail_recall_max_ids", 3))),
+        )
+        self.memory_detail_recall_budget = max(
+            200,
+            int(self.gateway_cfg.get("memory_detail_recall_budget", 1200)),
+        )
         self.edge_min_confidence = float(self.gateway_cfg.get("edge_min_confidence", 0.55))
         self.upstream_key_cooldown_seconds = max(
             0.0, float(self.gateway_cfg.get("upstream_key_cooldown_seconds", 300))
@@ -328,6 +405,14 @@ class GatewayService:
             "current_inner_state_interval_rounds": self.current_inner_state_interval_rounds,
             "direct_render_mode": self.direct_render_mode,
             "retrieval_mode": self.retrieval_mode,
+            "query_planner_enabled": self.query_planner_enabled,
+            "query_planner_model": self.query_planner_model,
+            "query_planner_min_chars": self.query_planner_min_chars,
+            "query_planner_max_queries": self.query_planner_max_queries,
+            "query_planner_max_tokens": self.query_planner_max_tokens,
+            "memory_detail_recall_enabled": self.memory_detail_recall_enabled,
+            "memory_detail_recall_max_ids": self.memory_detail_recall_max_ids,
+            "memory_detail_recall_budget": self.memory_detail_recall_budget,
         }
 
     def _memory_diffusion_config_payload(self) -> dict[str, Any]:
@@ -412,6 +497,41 @@ class GatewayService:
             self.retrieval_mode = self._normalize_retrieval_mode(payload["retrieval_mode"])
             self.gateway_cfg["retrieval_mode"] = self.retrieval_mode
             updated.append("gateway.retrieval_mode")
+        if "query_planner_enabled" in payload:
+            self.query_planner_enabled = self._bool_config_value(payload["query_planner_enabled"], False)
+            self.gateway_cfg["query_planner_enabled"] = self.query_planner_enabled
+            updated.append("gateway.query_planner_enabled")
+        if "query_planner_model" in payload:
+            self.query_planner_model = str(payload["query_planner_model"] or "").strip()
+            self.gateway_cfg["query_planner_model"] = self.query_planner_model
+            updated.append("gateway.query_planner_model")
+        if "query_planner_min_chars" in payload:
+            self.query_planner_min_chars = max(0, int(payload["query_planner_min_chars"]))
+            self.gateway_cfg["query_planner_min_chars"] = self.query_planner_min_chars
+            updated.append("gateway.query_planner_min_chars")
+        if "query_planner_max_queries" in payload:
+            self.query_planner_max_queries = max(1, min(3, int(payload["query_planner_max_queries"])))
+            self.gateway_cfg["query_planner_max_queries"] = self.query_planner_max_queries
+            updated.append("gateway.query_planner_max_queries")
+        if "query_planner_max_tokens" in payload:
+            self.query_planner_max_tokens = max(128, int(payload["query_planner_max_tokens"]))
+            self.gateway_cfg["query_planner_max_tokens"] = self.query_planner_max_tokens
+            updated.append("gateway.query_planner_max_tokens")
+        if "memory_detail_recall_enabled" in payload:
+            self.memory_detail_recall_enabled = self._bool_config_value(
+                payload["memory_detail_recall_enabled"],
+                False,
+            )
+            self.gateway_cfg["memory_detail_recall_enabled"] = self.memory_detail_recall_enabled
+            updated.append("gateway.memory_detail_recall_enabled")
+        if "memory_detail_recall_max_ids" in payload:
+            self.memory_detail_recall_max_ids = max(1, min(3, int(payload["memory_detail_recall_max_ids"])))
+            self.gateway_cfg["memory_detail_recall_max_ids"] = self.memory_detail_recall_max_ids
+            updated.append("gateway.memory_detail_recall_max_ids")
+        if "memory_detail_recall_budget" in payload:
+            self.memory_detail_recall_budget = max(200, int(payload["memory_detail_recall_budget"]))
+            self.gateway_cfg["memory_detail_recall_budget"] = self.memory_detail_recall_budget
+            updated.append("gateway.memory_detail_recall_budget")
         return updated
 
     def _apply_memory_diffusion_config(self, payload: dict[str, Any]) -> list[str]:
@@ -627,6 +747,13 @@ class GatewayService:
 
         upstream_response = await self._forward_upstream(forward_payload)
         if 200 <= upstream_response.status_code < 300:
+            upstream_response, memory_detail_debug = await self._maybe_retry_with_memory_detail(
+                forward_payload=forward_payload,
+                upstream_response=upstream_response,
+                injection_debug=injection_debug,
+            )
+            if memory_detail_debug and isinstance(injection_debug, dict):
+                injection_debug["memory_detail_recall_debug"] = memory_detail_debug
             self._log_cache_usage_from_response(
                 session_id,
                 forward_payload["model"],
@@ -699,6 +826,13 @@ class GatewayService:
 
         upstream_response = await self._forward_upstream(forward_payload)
         if 200 <= upstream_response.status_code < 300:
+            upstream_response, memory_detail_debug = await self._maybe_retry_with_memory_detail(
+                forward_payload=forward_payload,
+                upstream_response=upstream_response,
+                injection_debug=injection_debug,
+            )
+            if memory_detail_debug and isinstance(injection_debug, dict):
+                injection_debug["memory_detail_recall_debug"] = memory_detail_debug
             self._log_cache_usage_from_response(
                 session_id,
                 forward_payload["model"],
@@ -799,12 +933,14 @@ class GatewayService:
         favorite_memory = ""
         favorite_ids: list[str] = []
         related_memory = ""
+        memory_detail_recall_instruction = ""
         dream_context = ""
         dream_context_status: dict[str, Any] = {"status": "skipped", "reason": "not_current_user_turn"}
         diffused_moment_debug: list[dict[str, Any]] = []
         context_mode = ""
         persona_state: dict[str, Any] | None = None
         injected_ids: list[str] | None = None
+        query_planner_debug: dict[str, Any] = self._query_planner_debug_base(current_user_query)
 
         if is_new_user_turn:
             if self.persona_engine.enabled and self._should_inject_interval(
@@ -822,11 +958,12 @@ class GatewayService:
                 core_memory = await self._build_core_memory_block(all_buckets)
             if self.recalled_budget > 0 or self.related_memory_budget > 0:
                 if self.retrieval_mode == "bucket":
-                    selected_buckets, suppressed_buckets = await self._select_dynamic_buckets(
+                    selected_buckets, suppressed_buckets, query_planner_debug = await self._select_dynamic_buckets(
                         current_user_query,
                         session_id,
                         all_buckets,
                         search_query=recall_search_query(current_user_query, self.relevance_options),
+                        include_query_planner_debug=True,
                     )
                     for bucket in selected_buckets:
                         bucket_id = str(bucket.get("id") or "")
@@ -847,11 +984,13 @@ class GatewayService:
                         moment_candidates,
                         suppressed_moments,
                         suppressed_buckets,
+                        query_planner_debug,
                     ) = await self._select_dynamic_moments(
                         current_user_query,
                         session_id,
                         all_buckets,
                         grouped_moments,
+                        include_query_planner_debug=True,
                     )
             else:
                 suppressed_moments = []
@@ -882,6 +1021,16 @@ class GatewayService:
                 )
             else:
                 related_memory = ""
+            if self.memory_detail_recall_enabled and (
+                recalled_memory.strip() or related_memory.strip() or favorite_memory.strip()
+            ):
+                memory_detail_recall_instruction = (
+                    "Internal memory detail request: if a shown memory summary is clearly relevant "
+                    "but lacks needed detail, you may start your draft with exactly "
+                    f"`[memory_detail ids=\"bucket_id_1,bucket_id_2\"]`. Use only bucket_id values "
+                    f"shown in this turn, at most {self.memory_detail_recall_max_ids}. "
+                    "Do not mention this line in the final answer."
+                )
             reliable_dynamic_context = bool(recalled_memory.strip() or related_memory.strip())
             if self._should_inject_recent_context(
                 session_id,
@@ -929,6 +1078,7 @@ class GatewayService:
             favorite_memory=favorite_memory,
             related_memory=related_memory,
             dream_context=dream_context,
+            memory_detail_recall_instruction=memory_detail_recall_instruction,
             context_mode=context_mode,
         )
 
@@ -961,6 +1111,7 @@ class GatewayService:
                 diffused_moment_debug=diffused_moment_debug,
                 suppressed_moments=suppressed_moments,
                 suppressed_buckets=suppressed_buckets,
+                query_planner_debug=query_planner_debug,
             )
         return forward_payload, injected_ids
 
@@ -1276,6 +1427,165 @@ class GatewayService:
             round_id,
             recalled_ids,
         )
+
+    async def _maybe_retry_with_memory_detail(
+        self,
+        *,
+        forward_payload: dict[str, Any],
+        upstream_response: httpx.Response,
+        injection_debug: dict[str, Any] | None,
+    ) -> tuple[httpx.Response, dict[str, Any] | None]:
+        try:
+            body = upstream_response.json()
+        except ValueError:
+            return upstream_response, None
+
+        assistant_message = self._extract_assistant_message_from_response_body(body)
+        if not isinstance(assistant_message, dict):
+            return upstream_response, None
+        text = self._coerce_message_text(assistant_message.get("content"))
+        requested_ids, stripped_text = self._parse_memory_detail_request(text)
+        if not requested_ids:
+            return upstream_response, None
+
+        allowed_ids = []
+        if isinstance(injection_debug, dict):
+            allowed_ids = [
+                str(bucket_id)
+                for bucket_id in injection_debug.get("injected_bucket_ids", []) or []
+                if str(bucket_id or "").strip()
+            ]
+        debug = self._memory_detail_recall_debug_base(allowed_ids)
+        debug["triggered"] = True
+        debug["requested_ids"] = requested_ids
+
+        stripped_response = self._response_with_assistant_content(upstream_response, body, stripped_text)
+        if not self.memory_detail_recall_enabled:
+            debug["skip_reason"] = "disabled"
+            return stripped_response, debug
+
+        allowed_set = set(allowed_ids)
+        accepted_ids = []
+        rejected_ids = []
+        for bucket_id in requested_ids:
+            if bucket_id in accepted_ids:
+                continue
+            if bucket_id not in allowed_set:
+                rejected_ids.append(bucket_id)
+                continue
+            if len(accepted_ids) >= self.memory_detail_recall_max_ids:
+                rejected_ids.append(bucket_id)
+                continue
+            accepted_ids.append(bucket_id)
+
+        debug["accepted_ids"] = accepted_ids
+        debug["rejected_ids"] = rejected_ids
+        if not accepted_ids:
+            debug["skip_reason"] = "no_allowed_ids"
+            return stripped_response, debug
+
+        detail_context, missing_ids = await self._build_memory_detail_recall_context(accepted_ids)
+        debug["missing_ids"] = missing_ids
+        if not detail_context.strip():
+            debug["skip_reason"] = "empty_detail_context"
+            return stripped_response, debug
+
+        retry_payload = deepcopy(forward_payload)
+        retry_payload["stream"] = False
+        retry_payload["messages"] = self._insert_memory_detail_context(
+            retry_payload.get("messages", []),
+            detail_context,
+        )
+        debug["detail_tokens"] = count_tokens_approx(detail_context)
+        retry_response = await self._forward_upstream(retry_payload)
+        debug["retry_status_code"] = retry_response.status_code
+        if 200 <= retry_response.status_code < 300:
+            debug["retried"] = True
+            return retry_response, debug
+
+        debug["skip_reason"] = "retry_failed"
+        return stripped_response, debug
+
+    def _memory_detail_recall_debug_base(self, allowed_ids: list[str] | None = None) -> dict[str, Any]:
+        return {
+            "enabled": bool(self.memory_detail_recall_enabled),
+            "triggered": False,
+            "retried": False,
+            "skip_reason": "",
+            "allowed_ids": list(allowed_ids or []),
+            "requested_ids": [],
+            "accepted_ids": [],
+            "rejected_ids": [],
+            "missing_ids": [],
+            "detail_tokens": 0,
+            "retry_status_code": None,
+        }
+
+    @staticmethod
+    def _parse_memory_detail_request(text: str) -> tuple[list[str], str]:
+        raw = str(text or "")
+        match = MEMORY_DETAIL_REQUEST_RE.match(raw)
+        if not match:
+            return [], raw
+        requested_ids = []
+        seen = set()
+        for item in re.split(r"[\s,，、;；|]+", match.group("ids")):
+            bucket_id = item.strip()
+            if not bucket_id or bucket_id in seen:
+                continue
+            seen.add(bucket_id)
+            requested_ids.append(bucket_id)
+        return requested_ids, raw[match.end():].lstrip()
+
+    def _response_with_assistant_content(
+        self,
+        upstream_response: httpx.Response,
+        body: dict[str, Any],
+        content: str,
+    ) -> httpx.Response:
+        updated = deepcopy(body)
+        message = self._extract_assistant_message_from_response_body(updated)
+        if isinstance(message, dict):
+            message["content"] = content
+        return httpx.Response(
+            upstream_response.status_code,
+            json=updated,
+            headers={"content-type": "application/json"},
+        )
+
+    async def _build_memory_detail_recall_context(self, bucket_ids: list[str]) -> tuple[str, list[str]]:
+        all_buckets = await self.bucket_mgr.list_all(include_archive=False)
+        bucket_map = {
+            str(bucket.get("id") or ""): bucket
+            for bucket in all_buckets
+            if isinstance(bucket, dict) and bucket.get("id")
+        }
+        requested = [bucket_id for bucket_id in bucket_ids if bucket_id]
+        if not requested:
+            return "", []
+        per_bucket_budget = max(80, self.memory_detail_recall_budget // max(1, len(requested)))
+        blocks = [
+            "Additional private memory detail for this turn. Use quietly when relevant; do not mention lookup.",
+        ]
+        missing_ids = []
+        for bucket_id in requested:
+            bucket = bucket_map.get(bucket_id)
+            if not bucket:
+                missing_ids.append(bucket_id)
+                continue
+            meta = bucket.get("metadata", {}) if isinstance(bucket.get("metadata"), dict) else {}
+            title = str(meta.get("name") or bucket_id)
+            original = self._rendered_bucket_content(bucket)
+            block = f"[bucket_id:{bucket_id}] {title}\nbucket_detail\n{original}".strip()
+            blocks.append(self._trim_text(block, per_bucket_budget))
+        return "\n\n".join(part for part in blocks if part.strip()), missing_ids
+
+    def _insert_memory_detail_context(self, messages: Any, detail_context: str) -> list[dict]:
+        new_messages = deepcopy(messages) if isinstance(messages, list) else []
+        detail_message = {"role": "system", "content": detail_context}
+        insert_at = self._after_leading_system_index(new_messages)
+        new_messages.insert(insert_at, detail_message)
+        return new_messages
 
     async def _update_persona_after_response(
         self,
@@ -2758,17 +3068,39 @@ class GatewayService:
                 )
         return edges
 
+    def _empty_moment_selection(
+        self,
+        *,
+        include_query_planner_debug: bool = False,
+        query_planner_debug: dict[str, Any] | None = None,
+    ):
+        if include_query_planner_debug:
+            return [], [], [], [], (query_planner_debug or self._query_planner_debug_base(""))
+        return [], [], [], []
+
     async def _select_dynamic_moments(
         self,
         query: str,
         session_id: str,
         all_buckets: list[dict],
         grouped_moments: dict[str, list[dict]],
-    ) -> tuple[list[dict], list[dict], list[dict], list[dict]]:
+        *,
+        include_query_planner_debug: bool = False,
+    ) -> tuple[list[dict], list[dict], list[dict], list[dict]] | tuple[
+        list[dict], list[dict], list[dict], list[dict], dict[str, Any]
+    ]:
+        query_planner_debug = self._query_planner_debug_base(query)
         if not query or self.inject_max_cards <= 0:
-            return [], [], [], []
+            return self._empty_moment_selection(
+                include_query_planner_debug=include_query_planner_debug,
+                query_planner_debug=query_planner_debug,
+            )
         if self._auto_query_too_vague(query):
-            return [], [], [], []
+            query_planner_debug["skip_reason"] = "auto_vague_query"
+            return self._empty_moment_selection(
+                include_query_planner_debug=include_query_planner_debug,
+                query_planner_debug=query_planner_debug,
+            )
 
         relevance_query = self._query_has_relevance_facet(query)
         eligible_ids = {
@@ -2784,14 +3116,19 @@ class GatewayService:
             )
         }
         if not eligible_ids:
-            return [], [], [], []
+            query_planner_debug["skip_reason"] = "no_eligible_buckets"
+            return self._empty_moment_selection(
+                include_query_planner_debug=include_query_planner_debug,
+                query_planner_debug=query_planner_debug,
+            )
 
         search_query = recall_search_query(query, self.relevance_options)
-        selected_buckets, suppressed_buckets = await self._select_dynamic_buckets(
+        selected_buckets, suppressed_buckets, query_planner_debug = await self._select_dynamic_buckets(
             query,
             session_id,
             all_buckets,
             search_query=search_query,
+            include_query_planner_debug=True,
         )
         selected_bucket_ids = [bucket["id"] for bucket in selected_buckets if bucket.get("id")]
         bucket_boosts = {bucket_id: 1.0 for bucket_id in selected_bucket_ids}
@@ -2839,7 +3176,10 @@ class GatewayService:
                 seen_buckets.add(bucket_id)
 
         if selected:
-            return selected[: self.inject_max_cards], candidates, suppressed_candidates, suppressed_buckets
+            result = (selected[: self.inject_max_cards], candidates, suppressed_candidates, suppressed_buckets)
+            if include_query_planner_debug:
+                return (*result, query_planner_debug)
+            return result
 
         recent_ids = self.state_store.get_recent_bucket_ids(session_id, self.skip_recent_rounds)
         active_candidates = [
@@ -2856,7 +3196,10 @@ class GatewayService:
             seen_buckets.add(bucket_id)
             if len(selected) >= self.inject_max_cards:
                 break
-        return selected, candidates, suppressed_candidates, suppressed_buckets
+        result = (selected, candidates, suppressed_candidates, suppressed_buckets)
+        if include_query_planner_debug:
+            return (*result, query_planner_debug)
+        return result
 
     async def _rerank_moment_candidates(self, query: str, candidates: list[dict]) -> list[dict]:
         if not candidates or not getattr(self.reranker_engine, "enabled", False):
@@ -3147,6 +3490,18 @@ class GatewayService:
     def _normalize_retrieval_mode(value: object) -> str:
         mode = str(value or "graph").strip().lower()
         return mode if mode in {"graph", "bucket"} else "graph"
+
+    @staticmethod
+    def _bool_config_value(value: Any, default: bool = False) -> bool:
+        if value is None:
+            return default
+        if isinstance(value, str):
+            lowered = value.strip().lower()
+            if lowered in {"1", "true", "yes", "on"}:
+                return True
+            if lowered in {"0", "false", "no", "off", ""}:
+                return False
+        return bool(value)
 
     @staticmethod
     def _query_requests_direct_detail(query: str) -> bool:
@@ -3989,13 +4344,261 @@ class GatewayService:
     ) -> str:
         return await self._build_diffused_memory_block(recalled_buckets, all_buckets)
 
-    async def _select_dynamic_buckets(
+    def _query_planner_debug_base(self, query: str) -> dict[str, Any]:
+        return {
+            "enabled": bool(self.query_planner_enabled),
+            "triggered": False,
+            "trigger_reason": "",
+            "skip_reason": "",
+            "original_query": self._clip_text(query, 500),
+            "queries": [],
+            "supplemental": [],
+            "suppressed_by_must_terms": [],
+            "final_bucket_ids": [],
+            "errors": [],
+        }
+
+    def _query_planner_trigger_reason(self, query: str, selected_items: list[dict]) -> str:
+        if not self.query_planner_enabled:
+            return ""
+        text = str(query or "").strip()
+        if not text:
+            return ""
+        if self._auto_query_too_vague(text):
+            return ""
+        multi_topic = self._query_looks_multi_topic(text)
+        compact_len = len(re.sub(r"\s+", "", text))
+        long_enough = compact_len >= self.query_planner_min_chars
+        if multi_topic:
+            return "multi_topic"
+        if not selected_items and long_enough:
+            return "direct_recall_empty_or_low_confidence"
+        return ""
+
+    def _query_looks_multi_topic(self, query: str) -> bool:
+        text = str(query or "").strip()
+        if not text:
+            return False
+        compact_len = len(re.sub(r"\s+", "", text))
+        if compact_len < max(12, self.query_planner_min_chars // 2):
+            return False
+        terms = self.recall_policy.specific_query_terms(text)
+        separator_count = len(re.findall(r"[，,。！？!?；;、/\n]", text))
+        topic_markers = ("另外", "还有", "而且", "同时", "顺便", "然后", "以及", "但是", "不过", "再说")
+        if len(terms) >= 5 and (separator_count >= 1 or compact_len >= self.query_planner_min_chars):
+            return True
+        if len(terms) >= 3 and (separator_count >= 2 or any(marker in text for marker in topic_markers)):
+            return True
+        return False
+
+    async def _call_query_planner(self, query: str) -> tuple[dict[str, Any] | None, str | None]:
+        model = self.query_planner_model or self.upstream_default_model
+        if not model:
+            return None, "query_planner_model_missing"
+        payload = {
+            "model": model,
+            "messages": [
+                {"role": "system", "content": QUERY_PLANNER_SYSTEM_PROMPT},
+                {
+                    "role": "user",
+                    "content": json.dumps(
+                        {
+                            "message": query,
+                            "max_queries": self.query_planner_max_queries,
+                        },
+                        ensure_ascii=False,
+                    ),
+                },
+            ],
+            "temperature": 0,
+            "max_tokens": self.query_planner_max_tokens,
+            "stream": False,
+        }
+        try:
+            response = await self._forward_upstream(payload)
+        except Exception as exc:
+            logger.warning("Gateway query planner call failed: %s", exc)
+            return None, f"query_planner_call_failed:{type(exc).__name__}"
+        if response.status_code >= 400:
+            return None, f"query_planner_upstream_status:{response.status_code}"
+        try:
+            body = response.json()
+        except Exception:
+            return None, "query_planner_invalid_upstream_json"
+        content = self._chat_completion_content(body)
+        if not content:
+            return None, "query_planner_empty_response"
+        try:
+            return self._parse_query_planner_response(content), None
+        except ValueError as exc:
+            return None, f"query_planner_parse_failed:{exc}"
+
+    @staticmethod
+    def _chat_completion_content(body: dict[str, Any]) -> str:
+        choices = body.get("choices")
+        if not isinstance(choices, list) or not choices:
+            return ""
+        first = choices[0] if isinstance(choices[0], dict) else {}
+        message = first.get("message") if isinstance(first, dict) else {}
+        if isinstance(message, dict):
+            content = message.get("content")
+            if isinstance(content, str):
+                return content.strip()
+        text = first.get("text") if isinstance(first, dict) else ""
+        return str(text or "").strip()
+
+    def _parse_query_planner_response(self, content: str) -> dict[str, Any]:
+        text = str(content or "").strip()
+        if text.startswith("```"):
+            text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.IGNORECASE)
+            text = re.sub(r"\s*```$", "", text).strip()
+        if not text.startswith("{"):
+            start = text.find("{")
+            end = text.rfind("}")
+            if start >= 0 and end > start:
+                text = text[start : end + 1]
+        try:
+            raw = json.loads(text)
+        except json.JSONDecodeError as exc:
+            raise ValueError("invalid_json") from exc
+        if not isinstance(raw, dict):
+            raise ValueError("json_root_not_object")
+
+        plan = {
+            "should_search": bool(raw.get("should_search", False)),
+            "too_vague": bool(raw.get("too_vague", False)),
+            "queries": [],
+        }
+        raw_queries = raw.get("queries")
+        if not isinstance(raw_queries, list):
+            raw_queries = []
+        for item in raw_queries[: self.query_planner_max_queries]:
+            if not isinstance(item, dict):
+                continue
+            query = self._clip_text(str(item.get("query") or "").strip(), 80)
+            if not query:
+                continue
+            must_terms = self._normalize_planner_terms(item.get("must_terms"))
+            if not must_terms:
+                must_terms = self._normalize_planner_terms(self.recall_policy.specific_query_terms(query)[:4])
+            if not must_terms:
+                continue
+            risk = str(item.get("risk") or "medium").strip().lower()
+            if risk not in {"low", "medium", "high"}:
+                risk = "medium"
+            plan["queries"].append(
+                {
+                    "query": query,
+                    "must_terms": must_terms[:5],
+                    "intent": self._clip_text(str(item.get("intent") or ""), 80),
+                    "risk": risk,
+                }
+            )
+        if not plan["queries"]:
+            plan["should_search"] = False
+        return plan
+
+    @staticmethod
+    def _normalize_planner_terms(value: Any) -> list[str]:
+        if isinstance(value, str):
+            raw_terms = re.split(r"[\s,，、;；|/]+", value)
+        elif isinstance(value, list):
+            raw_terms = value
+        else:
+            raw_terms = []
+        terms: list[str] = []
+        seen: set[str] = set()
+        for term in raw_terms:
+            cleaned = str(term or "").strip().strip("\"'`“”‘’")
+            if not cleaned:
+                continue
+            if len(cleaned) > 40:
+                cleaned = cleaned[:40].strip()
+            key = cleaned.lower()
+            generic_residue = key
+            for generic in sorted(QUERY_PLANNER_GENERIC_TERMS, key=len, reverse=True):
+                generic_residue = generic_residue.replace(generic, "")
+            if key in QUERY_PLANNER_GENERIC_TERMS or not generic_residue.strip():
+                continue
+            if key in seen:
+                continue
+            seen.add(key)
+            terms.append(cleaned)
+        return terms
+
+    def _bucket_matches_any_planner_term(self, bucket: dict, terms: list[str]) -> bool:
+        if not terms:
+            return True
+        meta = bucket.get("metadata", {}) if isinstance(bucket.get("metadata"), dict) else {}
+        fields = " ".join(
+            [
+                str(meta.get("name") or bucket.get("id") or ""),
+                " ".join(str(tag) for tag in meta.get("tags", []) or []),
+                " ".join(str(item) for item in meta.get("domain", []) or []),
+                strip_wikilinks(str(bucket.get("content") or "")),
+            ]
+        ).lower()
+        return any(str(term or "").strip().lower() in fields for term in terms)
+
+    def _merge_dynamic_bucket_items(self, items: list[dict], query: str) -> list[dict]:
+        merged: dict[str, dict] = {}
+        for item in items:
+            bucket = item.get("bucket") if isinstance(item, dict) else None
+            if not isinstance(bucket, dict):
+                continue
+            bucket_id = str(bucket.get("id") or "")
+            if not bucket_id:
+                continue
+            incoming = dict(item)
+            incoming_queries = list(incoming.get("planner_queries") or [])
+            existing = merged.get(bucket_id)
+            if existing is None:
+                incoming["planner_queries"] = incoming_queries
+                incoming["planner_match_count"] = len({str(q.get("query") or "") for q in incoming_queries})
+                merged[bucket_id] = incoming
+                continue
+
+            existing_queries = list(existing.get("planner_queries") or [])
+            query_keys = {str(q.get("query") or "") for q in existing_queries}
+            for query_info in incoming_queries:
+                key = str(query_info.get("query") or "")
+                if key and key not in query_keys:
+                    existing_queries.append(query_info)
+                    query_keys.add(key)
+            best = incoming if self._safe_float(incoming.get("score"), 0.0) > self._safe_float(existing.get("score"), 0.0) else existing
+            preserved_queries = existing_queries
+            preserved_count = len(query_keys)
+            merged[bucket_id] = dict(best)
+            merged[bucket_id]["planner_queries"] = preserved_queries
+            merged[bucket_id]["planner_match_count"] = preserved_count
+
+        output = []
+        for item in merged.values():
+            match_count = int(item.get("planner_match_count") or 0)
+            if match_count > 1:
+                bonus = min(self.query_planner_score_bonus * (match_count - 1), self.query_planner_score_bonus * 3)
+                item["score"] = round(self._safe_float(item.get("score"), 0.0) + bonus, 4)
+                item["planner_score_bonus"] = round(bonus, 4)
+            output.append(item)
+
+        output.sort(
+            key=lambda item: (
+                self._bucket_recall_rank(query, item["bucket"], item.get("score", 0.0))[0],
+                -int(item.get("planner_match_count") or 0),
+                -self._safe_float(item.get("score"), 0.0),
+            )
+        )
+        return output
+
+    async def _dynamic_bucket_candidate_items(
         self,
         query: str,
         session_id: str,
         all_buckets: list[dict],
         *,
         search_query: str = "",
+        required_terms: list[str] | None = None,
+        planner_query: dict[str, Any] | None = None,
     ) -> tuple[list[dict], list[dict]]:
         if not query or self.inject_max_cards <= 0:
             return [], []
@@ -4066,6 +4669,7 @@ class GatewayService:
                     "importance_score": importance_score,
                     "freshness_score": freshness_score,
                     "cooldown_multiplier": cooldown_multiplier,
+                    "planner_queries": [planner_query] if planner_query else [],
                 }
             )
 
@@ -4081,16 +4685,124 @@ class GatewayService:
         active_pool = filtered or scored_candidates
         admitted_pool = []
         suppressed_candidates = []
+        required_terms = required_terms or []
         for item in active_pool:
+            if required_terms and not self._bucket_matches_any_planner_term(item.get("bucket") or {}, required_terms):
+                item["admission_reason"] = "planner_must_terms_missing"
+                item["recall_policy_debug"] = {
+                    "planner_must_terms": required_terms,
+                    "must_terms_matched": False,
+                    "auto": True,
+                }
+                suppressed_candidates.append(item)
+                continue
             if self._admit_bucket_for_recall(query, item):
                 admitted_pool.append(item)
             else:
                 suppressed_candidates.append(item)
-        active_pool = admitted_pool
-        if not active_pool:
-            return [], suppressed_candidates
-        selected = self._pick_dynamic_cards(active_pool)
-        return [item["bucket"] for item in selected], suppressed_candidates
+        return admitted_pool, suppressed_candidates
+
+    async def _select_dynamic_buckets(
+        self,
+        query: str,
+        session_id: str,
+        all_buckets: list[dict],
+        *,
+        search_query: str = "",
+        include_query_planner_debug: bool = False,
+    ) -> tuple[list[dict], list[dict]] | tuple[list[dict], list[dict], dict[str, Any]]:
+        planner_debug = self._query_planner_debug_base(query)
+        if not query or self.inject_max_cards <= 0:
+            if include_query_planner_debug:
+                return [], [], planner_debug
+            return [], []
+        if self._auto_query_too_vague(query):
+            planner_debug["skip_reason"] = "auto_vague_query"
+            if include_query_planner_debug:
+                return [], [], planner_debug
+            return [], []
+
+        active_pool, suppressed_candidates = await self._dynamic_bucket_candidate_items(
+            query,
+            session_id,
+            all_buckets,
+            search_query=search_query,
+        )
+        direct_selected = self._pick_dynamic_cards(active_pool)
+        selected_items = list(direct_selected)
+
+        trigger_reason = self._query_planner_trigger_reason(query, direct_selected)
+        if trigger_reason:
+            planner_debug["triggered"] = True
+            planner_debug["trigger_reason"] = trigger_reason
+            plan, error = await self._call_query_planner(query)
+            if error:
+                planner_debug["errors"].append(error)
+            elif plan:
+                planner_debug["queries"] = plan.get("queries", [])
+                if plan.get("should_search") and not plan.get("too_vague"):
+                    supplemental_items: list[dict] = []
+                    for planner_query in plan.get("queries", [])[: self.query_planner_max_queries]:
+                        short_query = str(planner_query.get("query") or "").strip()
+                        must_terms = list(planner_query.get("must_terms") or [])
+                        if not short_query or not must_terms:
+                            continue
+                        short_search_query = recall_search_query(short_query, self.relevance_options)
+                        admitted, suppressed = await self._dynamic_bucket_candidate_items(
+                            short_query,
+                            session_id,
+                            all_buckets,
+                            search_query=short_search_query,
+                            required_terms=must_terms,
+                            planner_query=planner_query,
+                        )
+                        supplemental_items.extend(admitted)
+                        suppressed_candidates.extend(suppressed)
+                        suppressed_must = [
+                            self._format_suppressed_bucket_debug(item, query=short_query)
+                            for item in suppressed
+                            if item.get("admission_reason") == "planner_must_terms_missing"
+                        ]
+                        planner_debug["suppressed_by_must_terms"].extend(suppressed_must)
+                        planner_debug["supplemental"].append(
+                            {
+                                "query": short_query,
+                                "must_terms": must_terms,
+                                "survived_bucket_ids": [
+                                    str((item.get("bucket") or {}).get("id") or "")
+                                    for item in admitted
+                                    if (item.get("bucket") or {}).get("id")
+                                ],
+                                "suppressed_bucket_ids": [
+                                    str((item.get("bucket") or {}).get("id") or "")
+                                    for item in suppressed
+                                    if (item.get("bucket") or {}).get("id")
+                                ],
+                                "suppressed_by_must_terms": [
+                                    row.get("bucket_id")
+                                    for row in suppressed_must
+                                    if isinstance(row, dict) and row.get("bucket_id")
+                                ],
+                            }
+                        )
+                    if supplemental_items:
+                        selected_items = self._pick_dynamic_cards(
+                            self._merge_dynamic_bucket_items(selected_items + supplemental_items, query)
+                        )
+                else:
+                    planner_debug["skip_reason"] = "planner_returned_no_search"
+        elif self.query_planner_enabled:
+            planner_debug["skip_reason"] = "direct_recall_ok_or_query_short"
+
+        planner_debug["final_bucket_ids"] = [
+            str((item.get("bucket") or {}).get("id") or "")
+            for item in selected_items
+            if (item.get("bucket") or {}).get("id")
+        ]
+        result = ([item["bucket"] for item in selected_items], suppressed_candidates)
+        if include_query_planner_debug:
+            return (*result, planner_debug)
+        return result
 
     async def _rerank_scored_bucket_candidates(self, query: str, scored_candidates: list[dict]) -> list[dict]:
         if not scored_candidates or not getattr(self.reranker_engine, "enabled", False):
@@ -4374,6 +5086,7 @@ class GatewayService:
         favorite_memory: str,
         related_memory: str,
         dream_context: str,
+        memory_detail_recall_instruction: str = "",
         context_mode: str = "",
     ) -> tuple[str, str]:
         stable_sections = []
@@ -4396,6 +5109,7 @@ class GatewayService:
                 recent_context,
                 recalled_memory,
                 related_memory,
+                memory_detail_recall_instruction,
                 dream_context,
                 context_mode,
             ]
@@ -4412,6 +5126,7 @@ class GatewayService:
             add_section("Context Mode", f"context_mode: {context_mode}" if context_mode.strip() else "")
             add_section("Recalled Memory", recalled_memory)
             add_section("Diffused Memory", related_memory)
+            add_section("Memory Detail Request", memory_detail_recall_instruction)
             if persona_block.strip():
                 dynamic_sections.extend(["", persona_block])
             add_section("Relationship Weather", relationship_weather)
@@ -4696,6 +5411,7 @@ class GatewayService:
         diffused_moment_debug: list[dict[str, Any]] | None = None,
         suppressed_moments: list[dict] | None = None,
         suppressed_buckets: list[dict] | None = None,
+        query_planner_debug: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         recalled_moment_ids = [
             str(moment.get("moment_id") or "")
@@ -4744,6 +5460,8 @@ class GatewayService:
             "recent_context_reason": recent_context_reason,
             "dream_context_injected": bool(str(dream_context or "").strip()),
             "dream_context_status": dream_context_status,
+            "query_planner_debug": query_planner_debug or self._query_planner_debug_base(query),
+            "memory_detail_recall_debug": self._memory_detail_recall_debug_base(injected_bucket_ids),
             "injected_bucket_ids": injected_bucket_ids,
             "recalled_bucket_ids": recalled_bucket_ids,
             "diffused_bucket_ids": diffused_bucket_ids,

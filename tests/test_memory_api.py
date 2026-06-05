@@ -2001,6 +2001,14 @@ async def test_config_get_reports_gateway_recall_modes(monkeypatch):
                 "current_inner_state_interval_rounds": 11,
                 "direct_render_mode": "full",
                 "retrieval_mode": "bucket",
+                "query_planner_enabled": True,
+                "query_planner_model": "planner-mini",
+                "query_planner_min_chars": 24,
+                "query_planner_max_queries": 2,
+                "query_planner_max_tokens": 256,
+                "memory_detail_recall_enabled": True,
+                "memory_detail_recall_max_ids": 2,
+                "memory_detail_recall_budget": 900,
             },
         },
     )
@@ -2018,6 +2026,14 @@ async def test_config_get_reports_gateway_recall_modes(monkeypatch):
     assert payload["gateway"]["current_inner_state_interval_rounds"] == 11
     assert payload["gateway"]["direct_render_mode"] == "full"
     assert payload["gateway"]["retrieval_mode"] == "bucket"
+    assert payload["gateway"]["query_planner_enabled"] is True
+    assert payload["gateway"]["query_planner_model"] == "planner-mini"
+    assert payload["gateway"]["query_planner_min_chars"] == 24
+    assert payload["gateway"]["query_planner_max_queries"] == 2
+    assert payload["gateway"]["query_planner_max_tokens"] == 256
+    assert payload["gateway"]["memory_detail_recall_enabled"] is True
+    assert payload["gateway"]["memory_detail_recall_max_ids"] == 2
+    assert payload["gateway"]["memory_detail_recall_budget"] == 900
     assert payload["recall"]["query_resurface_enabled"] is True
 
 
@@ -2292,6 +2308,14 @@ async def test_config_persist_syncs_existing_runtime_yaml(monkeypatch, test_conf
                     "current_inner_state_interval_rounds": 9,
                     "direct_render_mode": "full",
                     "retrieval_mode": "bucket",
+                    "query_planner_enabled": True,
+                    "query_planner_model": "planner-mini",
+                    "query_planner_min_chars": 24,
+                    "query_planner_max_queries": 2,
+                    "query_planner_max_tokens": 256,
+                    "memory_detail_recall_enabled": True,
+                    "memory_detail_recall_max_ids": 2,
+                    "memory_detail_recall_budget": 900,
                 },
                 "recall": {"query_resurface_enabled": True},
                 "memory_diffusion": {
@@ -2339,6 +2363,14 @@ async def test_config_persist_syncs_existing_runtime_yaml(monkeypatch, test_conf
     assert runtime_config["gateway"]["current_inner_state_interval_rounds"] == 9
     assert runtime_config["gateway"]["direct_render_mode"] == "full"
     assert runtime_config["gateway"]["retrieval_mode"] == "bucket"
+    assert runtime_config["gateway"]["query_planner_enabled"] is True
+    assert runtime_config["gateway"]["query_planner_model"] == "planner-mini"
+    assert runtime_config["gateway"]["query_planner_min_chars"] == 24
+    assert runtime_config["gateway"]["query_planner_max_queries"] == 2
+    assert runtime_config["gateway"]["query_planner_max_tokens"] == 256
+    assert runtime_config["gateway"]["memory_detail_recall_enabled"] is True
+    assert runtime_config["gateway"]["memory_detail_recall_max_ids"] == 2
+    assert runtime_config["gateway"]["memory_detail_recall_budget"] == 900
     assert runtime_config["recall"]["query_resurface_enabled"] is True
     assert hot_update_calls[-1] == {
         "gateway": {
@@ -2352,6 +2384,14 @@ async def test_config_persist_syncs_existing_runtime_yaml(monkeypatch, test_conf
             "current_inner_state_interval_rounds": 9,
             "direct_render_mode": "full",
             "retrieval_mode": "bucket",
+            "query_planner_enabled": True,
+            "query_planner_model": "planner-mini",
+            "query_planner_min_chars": 24,
+            "query_planner_max_queries": 2,
+            "query_planner_max_tokens": 256,
+            "memory_detail_recall_enabled": True,
+            "memory_detail_recall_max_ids": 2,
+            "memory_detail_recall_budget": 900,
         },
         "memory_diffusion": {
             "enabled": True,

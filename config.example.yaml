@@ -265,6 +265,14 @@ gateway:
   recalled_memory_budget: 400
   direct_render_mode: auto   # auto | compact | full; direct/recalled display shape
   retrieval_mode: graph       # graph | bucket; bucket skips moment graph diffusion
+  query_planner_enabled: false # extra LLM call: split long/low-confidence messages into short recall queries
+  query_planner_model: ""      # empty = gateway upstream_default_model
+  query_planner_min_chars: 40  # only consider planner on long or multi-topic messages
+  query_planner_max_queries: 3
+  query_planner_max_tokens: 360
+  memory_detail_recall_enabled: false # optional internal [memory_detail ids="..."] retry for admitted bucket ids
+  memory_detail_recall_max_ids: 3
+  memory_detail_recall_budget: 1200
   relationship_weather_budget: 220
   relationship_weather_include_weekly: false
   favorite_memory_budget: 180

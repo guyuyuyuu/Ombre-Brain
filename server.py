@@ -6328,6 +6328,14 @@ async def api_config_get(request):
             "current_inner_state_interval_rounds": gateway_cfg.get("current_inner_state_interval_rounds", 15),
             "direct_render_mode": _normalize_direct_render_mode(gateway_cfg.get("direct_render_mode", "auto")),
             "retrieval_mode": _normalize_retrieval_mode(gateway_cfg.get("retrieval_mode", "graph")),
+            "query_planner_enabled": _bool_value(gateway_cfg.get("query_planner_enabled"), False),
+            "query_planner_model": gateway_cfg.get("query_planner_model", ""),
+            "query_planner_min_chars": gateway_cfg.get("query_planner_min_chars", 40),
+            "query_planner_max_queries": gateway_cfg.get("query_planner_max_queries", 3),
+            "query_planner_max_tokens": gateway_cfg.get("query_planner_max_tokens", 360),
+            "memory_detail_recall_enabled": _bool_value(gateway_cfg.get("memory_detail_recall_enabled"), False),
+            "memory_detail_recall_max_ids": gateway_cfg.get("memory_detail_recall_max_ids", 3),
+            "memory_detail_recall_budget": gateway_cfg.get("memory_detail_recall_budget", 1200),
         },
         "recall": {
             "query_resurface_enabled": _bool_value(recall_cfg.get("query_resurface_enabled"), False),
@@ -6584,6 +6592,38 @@ async def api_config_update(request):
             gateway_cfg["retrieval_mode"] = _normalize_retrieval_mode(g["retrieval_mode"])
             gateway_hot_update_body["retrieval_mode"] = gateway_cfg["retrieval_mode"]
             updated.append("gateway.retrieval_mode")
+        if "query_planner_enabled" in g:
+            gateway_cfg["query_planner_enabled"] = _bool_value(g["query_planner_enabled"], False)
+            gateway_hot_update_body["query_planner_enabled"] = gateway_cfg["query_planner_enabled"]
+            updated.append("gateway.query_planner_enabled")
+        if "query_planner_model" in g:
+            gateway_cfg["query_planner_model"] = str(g["query_planner_model"] or "").strip()
+            gateway_hot_update_body["query_planner_model"] = gateway_cfg["query_planner_model"]
+            updated.append("gateway.query_planner_model")
+        if "query_planner_min_chars" in g:
+            gateway_cfg["query_planner_min_chars"] = _int_between(g["query_planner_min_chars"], 40, 0, 1000)
+            gateway_hot_update_body["query_planner_min_chars"] = gateway_cfg["query_planner_min_chars"]
+            updated.append("gateway.query_planner_min_chars")
+        if "query_planner_max_queries" in g:
+            gateway_cfg["query_planner_max_queries"] = _int_between(g["query_planner_max_queries"], 3, 1, 3)
+            gateway_hot_update_body["query_planner_max_queries"] = gateway_cfg["query_planner_max_queries"]
+            updated.append("gateway.query_planner_max_queries")
+        if "query_planner_max_tokens" in g:
+            gateway_cfg["query_planner_max_tokens"] = _int_between(g["query_planner_max_tokens"], 360, 128, 2000)
+            gateway_hot_update_body["query_planner_max_tokens"] = gateway_cfg["query_planner_max_tokens"]
+            updated.append("gateway.query_planner_max_tokens")
+        if "memory_detail_recall_enabled" in g:
+            gateway_cfg["memory_detail_recall_enabled"] = _bool_value(g["memory_detail_recall_enabled"], False)
+            gateway_hot_update_body["memory_detail_recall_enabled"] = gateway_cfg["memory_detail_recall_enabled"]
+            updated.append("gateway.memory_detail_recall_enabled")
+        if "memory_detail_recall_max_ids" in g:
+            gateway_cfg["memory_detail_recall_max_ids"] = _int_between(g["memory_detail_recall_max_ids"], 3, 1, 3)
+            gateway_hot_update_body["memory_detail_recall_max_ids"] = gateway_cfg["memory_detail_recall_max_ids"]
+            updated.append("gateway.memory_detail_recall_max_ids")
+        if "memory_detail_recall_budget" in g:
+            gateway_cfg["memory_detail_recall_budget"] = _int_between(g["memory_detail_recall_budget"], 1200, 200, 4000)
+            gateway_hot_update_body["memory_detail_recall_budget"] = gateway_cfg["memory_detail_recall_budget"]
+            updated.append("gateway.memory_detail_recall_budget")
         if gateway_hot_update_body:
             gateway_hot_update_payload["gateway"] = gateway_hot_update_body
 
@@ -6768,6 +6808,53 @@ async def api_config_update(request):
                     sc_gateway["direct_render_mode"] = _normalize_direct_render_mode(body["gateway"]["direct_render_mode"])
                 if "retrieval_mode" in body["gateway"]:
                     sc_gateway["retrieval_mode"] = _normalize_retrieval_mode(body["gateway"]["retrieval_mode"])
+                if "query_planner_enabled" in body["gateway"]:
+                    sc_gateway["query_planner_enabled"] = _bool_value(
+                        body["gateway"]["query_planner_enabled"],
+                        False,
+                    )
+                if "query_planner_model" in body["gateway"]:
+                    sc_gateway["query_planner_model"] = str(body["gateway"]["query_planner_model"] or "").strip()
+                if "query_planner_min_chars" in body["gateway"]:
+                    sc_gateway["query_planner_min_chars"] = _int_between(
+                        body["gateway"]["query_planner_min_chars"],
+                        40,
+                        0,
+                        1000,
+                    )
+                if "query_planner_max_queries" in body["gateway"]:
+                    sc_gateway["query_planner_max_queries"] = _int_between(
+                        body["gateway"]["query_planner_max_queries"],
+                        3,
+                        1,
+                        3,
+                    )
+                if "query_planner_max_tokens" in body["gateway"]:
+                    sc_gateway["query_planner_max_tokens"] = _int_between(
+                        body["gateway"]["query_planner_max_tokens"],
+                        360,
+                        128,
+                        2000,
+                    )
+                if "memory_detail_recall_enabled" in body["gateway"]:
+                    sc_gateway["memory_detail_recall_enabled"] = _bool_value(
+                        body["gateway"]["memory_detail_recall_enabled"],
+                        False,
+                    )
+                if "memory_detail_recall_max_ids" in body["gateway"]:
+                    sc_gateway["memory_detail_recall_max_ids"] = _int_between(
+                        body["gateway"]["memory_detail_recall_max_ids"],
+                        3,
+                        1,
+                        3,
+                    )
+                if "memory_detail_recall_budget" in body["gateway"]:
+                    sc_gateway["memory_detail_recall_budget"] = _int_between(
+                        body["gateway"]["memory_detail_recall_budget"],
+                        1200,
+                        200,
+                        4000,
+                    )
 
             if "recall" in body:
                 sc_recall = save_config.setdefault("recall", {})
