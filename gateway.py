@@ -471,6 +471,9 @@ class GatewayService:
             "enabled": bool(getattr(self.persona_engine, "enabled", False)),
             "model": getattr(self.persona_engine, "model", ""),
             "base_url": getattr(self.persona_engine, "base_url", ""),
+            "event_recording_enabled": bool(
+                getattr(self.persona_engine, "event_recording_enabled", True)
+            ),
             "api_ready": bool(getattr(self.persona_engine, "api_key", "")),
         }
 
@@ -624,6 +627,9 @@ class GatewayService:
         if "enabled" in payload:
             persona_cfg["enabled"] = bool(payload["enabled"])
             updated.append("persona.enabled")
+        if "event_recording_enabled" in payload:
+            persona_cfg["event_recording_enabled"] = bool(payload["event_recording_enabled"])
+            updated.append("persona.event_recording_enabled")
         for key in ("model", "base_url"):
             if key in payload:
                 persona_cfg[key] = str(payload[key] or "").strip()

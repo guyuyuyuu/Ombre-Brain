@@ -2348,6 +2348,11 @@
       </div>
       <div style="margin-top:-4px;margin-bottom:12px;padding-left:122px;font-size:11px;color:var(--text-light);">关闭后 Gateway 不再注入 Persona 状态，也不再做回复后的 Persona 更新</div>
       <div class="config-row">
+        <label>记录事件</label>
+        <select id="cfg-persona-event-recording"><option value="true">开启</option><option value="false">关闭</option></select>
+      </div>
+      <div style="margin-top:-4px;margin-bottom:12px;padding-left:122px;font-size:11px;color:var(--text-light);">关闭后仍评估数值状态，但不新增 Recent Persona Events</div>
+      <div class="config-row">
         <label>Model</label>
         <input type="text" id="cfg-persona-model" placeholder="deepseek-chat" />
       </div>
@@ -4478,9 +4483,10 @@ function renderPersona(data) {
         '</div>' +
         '<div>' +
           '<div class="persona-guidance">我现在的心情是....</div>' +
-          '<div class="persona-guidance">' + esc((affect && affect.residue) || '当前没有明显余味。') + '</div>' +
+          '<div class="persona-guidance">' + esc((affect && (affect.inner_thought || affect.residue)) || '当前没有明显余味。') + '</div>' +
           '<div class="persona-status-line">' +
             '<span class="persona-pill">' + (cfg.enabled ? 'engine on' : 'engine paused') + '</span>' +
+            '<span class="persona-pill">' + (cfg.event_recording_enabled === false ? 'events paused' : 'events on') + '</span>' +
             '<span class="persona-pill">' + (cfg.api_ready ? 'LLM ready' : 'fallback state') + '</span>' +
             '<span class="persona-pill">' + esc(cfg.model || 'model unset') + '</span>' +
           '</div>' +
@@ -4544,12 +4550,14 @@ function renderPersonaEvents(events) {
     return '<div class="persona-empty">还没有 Persona 事件。通过 gateway 聊一轮后，这里会出现评估结果和状态增量。</div>';
   }
   return '<div class="persona-event-list">' + events.map(function(ev) {
-    var intent = ev.perceived_intent || ev.error || 'no intent recorded';
-    var residue = ev.residue ? '<div class="persona-event-residue">' + esc(ev.residue) + '</div>' : '';
+    var thought = ev.inner_thought || ev.residue || ev.perceived_intent || ev.error || 'no thought recorded';
+    var trigger = ev.surface_trigger || ev.perceived_intent || '';
+    var residue = ev.residue && ev.residue !== thought ? '<div class="persona-event-residue">' + esc(ev.residue) + '</div>' : '';
     return '<div class="persona-event">' +
       '<div class="persona-event-type">' + esc(ev.event_type || 'unknown') + '</div>' +
       '<div class="persona-event-main">' +
-        esc(intent) +
+        esc(thought) +
+        (trigger ? '<small>' + esc(trigger) + '</small>' : '') +
         residue +
         '<small>' + esc(ev.mood_label || 'mood unset') + ' · confidence ' + personaNumber(ev.confidence) + ' · #' + esc(ev.message_hash || '') + '</small>' +
         renderPersonaDeltas(ev) +
@@ -5041,6 +5049,8 @@ async function loadConfig() {
     document.getElementById('cfg-emb-key').value = '';
     document.getElementById('cfg-persona-enabled').value =
       (cfg.persona && cfg.persona.enabled) === false ? 'false' : 'true';
+    document.getElementById('cfg-persona-event-recording').value =
+      (cfg.persona && cfg.persona.event_recording_enabled) === false ? 'false' : 'true';
     document.getElementById('cfg-persona-model').value = (cfg.persona && cfg.persona.model) || '';
     document.getElementById('cfg-persona-url').value = (cfg.persona && cfg.persona.base_url) || '';
     document.getElementById('cfg-persona-key').placeholder =
@@ -5170,6 +5180,9 @@ async function saveConfig(persist, persistEnv) {
       base_url: document.getElementById('cfg-emb-url').value,
     };
     candidate.persona = {
+      enabled: document.getElementById('cfg-persona-enabled').value === 'true',
+      event_recording_enabled: document.getElementById('cfg-persona-event-recording').value === 'true',
+      model: document.getElementById('cfg-persona-model').value,
       base_url: document.getElementById('cfg-persona-url').value,
     };
     candidate.dream = {

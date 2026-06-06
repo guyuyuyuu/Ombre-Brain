@@ -2469,6 +2469,7 @@ async def test_config_get_reports_persona_and_reflection_api_values(monkeypatch)
         "persona_engine",
         SimpleNamespace(
             enabled=False,
+            event_recording_enabled=False,
             model="persona-model",
             base_url="https://persona.example",
             api_key="persona-secret",
@@ -2493,6 +2494,7 @@ async def test_config_get_reports_persona_and_reflection_api_values(monkeypatch)
     payload = json.loads(response.body)
 
     assert payload["persona"]["enabled"] is False
+    assert payload["persona"]["event_recording_enabled"] is False
     assert payload["persona"]["model"] == "persona-model"
     assert payload["persona"]["base_url"] == "https://persona.example"
     assert payload["persona"]["api_key_masked"] == "pers...cret"
@@ -2695,6 +2697,7 @@ async def test_config_update_persists_llm_keys_to_env_file(monkeypatch, test_con
                 "embedding": {"api_key": "emb-new"},
                 "persona": {
                     "enabled": False,
+                    "event_recording_enabled": False,
                     "model": "persona-new",
                     "base_url": "https://persona-new.example",
                     "api_key": "persona-new-key",
@@ -2730,6 +2733,7 @@ async def test_config_update_persists_llm_keys_to_env_file(monkeypatch, test_con
     assert "UNCHANGED=value" in env_text
     assert os.environ["OMBRE_PERSONA_API_KEY"] == "persona-new-key"
     assert hot_update_calls[-1]["persona"]["enabled"] is False
+    assert hot_update_calls[-1]["persona"]["event_recording_enabled"] is False
     assert hot_update_calls[-1]["persona"]["api_key"] == "persona-new-key"
 
 
@@ -2850,6 +2854,7 @@ async def test_config_persist_syncs_existing_runtime_yaml(monkeypatch, test_conf
             {
                 "persona": {
                     "enabled": False,
+                    "event_recording_enabled": False,
                     "model": "persona-new",
                     "base_url": "https://persona-new.example",
                 },
@@ -2913,6 +2918,7 @@ async def test_config_persist_syncs_existing_runtime_yaml(monkeypatch, test_conf
     assert payload["ok"] is True
     assert "runtime_yaml_synced" in payload["updated"]
     assert runtime_config["persona"]["enabled"] is False
+    assert runtime_config["persona"]["event_recording_enabled"] is False
     assert runtime_config["persona"]["model"] == "persona-new"
     assert runtime_config["persona"]["base_url"] == "https://persona-new.example"
     assert runtime_config["dream"]["model"] == "dream-new"
@@ -2978,6 +2984,7 @@ async def test_config_persist_syncs_existing_runtime_yaml(monkeypatch, test_conf
         },
         "persona": {
             "enabled": False,
+            "event_recording_enabled": False,
             "model": "persona-new",
             "base_url": "https://persona-new.example",
         },

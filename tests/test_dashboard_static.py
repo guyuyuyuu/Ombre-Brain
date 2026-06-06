@@ -277,17 +277,20 @@ def test_dashboard_exposes_persona_config_and_env_persist_button():
 
     assert "<h3>Persona State</h3>" in html
     assert 'id="cfg-persona-enabled"' in html
+    assert 'id="cfg-persona-event-recording"' in html
     assert 'id="cfg-persona-model"' in html
     assert 'id="cfg-persona-url"' in html
     assert 'id="cfg-persona-key"' in html
     assert "saveConfig(true, true)" in html
     assert "保存密钥到 .env" in html
     assert "cfg.persona.enabled" in load_block
+    assert "cfg.persona.event_recording_enabled" in load_block
     assert "cfg.persona.api_key_masked" in load_block
     persona_block = save_block.split("candidate.persona = {", 1)[1].split("};", 1)[0]
+    assert "enabled: document.getElementById('cfg-persona-enabled').value === 'true'," in persona_block
+    assert "event_recording_enabled: document.getElementById('cfg-persona-event-recording').value === 'true'," in persona_block
+    assert "model: document.getElementById('cfg-persona-model').value," in persona_block
     assert "base_url: document.getElementById('cfg-persona-url').value," in persona_block
-    assert "cfg-persona-enabled" not in persona_block
-    assert "cfg-persona-model" not in persona_block
     assert "persist_env: !!persistEnv" in save_block
     assert "if (!body.persona) body.persona = {};" in html
     assert "body.persona.api_key = personaKeyVal;" in html

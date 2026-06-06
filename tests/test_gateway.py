@@ -529,6 +529,7 @@ def test_gateway_config_endpoint_updates_persona_engine(monkeypatch, test_config
             json={
                 "persona": {
                     "enabled": False,
+                    "event_recording_enabled": False,
                     "model": "persona-new",
                     "base_url": "https://persona-new.example",
                     "api_key": "persona-key",
@@ -539,15 +540,18 @@ def test_gateway_config_endpoint_updates_persona_engine(monkeypatch, test_config
     assert response.status_code == 200
     assert response.json()["updated"] == [
         "persona.enabled",
+        "persona.event_recording_enabled",
         "persona.model",
         "persona.base_url",
         "persona.api_key",
     ]
     assert service.persona_engine.enabled is False
+    assert service.persona_engine.event_recording_enabled is False
     assert service.persona_engine.model == "persona-new"
     assert service.persona_engine.base_url == "https://persona-new.example"
     assert service.persona_engine.api_key == "persona-key"
     assert response.json()["persona"]["enabled"] is False
+    assert response.json()["persona"]["event_recording_enabled"] is False
     assert response.json()["persona"]["api_ready"] is True
 
 

@@ -426,6 +426,8 @@ persona:
   max_affect_delta: 0.18
   # Recent Persona Events is a sparse log, not a per-message transcript.
   # Strong relationship/personality/affect signals write immediately; ordinary turns batch.
+  # Turn this off to keep evaluating numeric state without writing persona_events.
+  event_recording_enabled: true
   event_batch_size: 2
   event_affect_total_threshold: 0.45
   event_affect_single_threshold: 0.14
@@ -453,6 +455,7 @@ persona:
     mood_label: "warm_neutral"
     session_defensiveness: 0.12
     residue: ""
+    inner_thought: ""
   # Env vars:
   #   OMBRE_PERSONA_API_KEY
   #   OMBRE_PERSONA_BASE_URL

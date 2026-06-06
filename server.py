@@ -7586,6 +7586,14 @@ async def api_config_get(request):
             "enabled": bool(getattr(persona_engine, "enabled", persona_cfg.get("enabled", True))),
             "model": getattr(persona_engine, "model", persona_cfg.get("model", "")),
             "base_url": getattr(persona_engine, "base_url", persona_cfg.get("base_url", "")),
+            "event_recording_enabled": _bool_value(
+                getattr(
+                    persona_engine,
+                    "event_recording_enabled",
+                    persona_cfg.get("event_recording_enabled"),
+                ),
+                True,
+            ),
             "api_key_masked": _mask_key(getattr(persona_engine, "api_key", "") or persona_cfg.get("api_key", "")),
             "api_ready": bool(getattr(persona_engine, "api_key", "") or persona_cfg.get("api_key", "")),
         },
@@ -7904,6 +7912,10 @@ async def api_config_update(request):
             persona_cfg["enabled"] = bool(p["enabled"])
             persona_gateway_payload["enabled"] = persona_cfg["enabled"]
             updated.append("persona.enabled")
+        if "event_recording_enabled" in p:
+            persona_cfg["event_recording_enabled"] = bool(p["event_recording_enabled"])
+            persona_gateway_payload["event_recording_enabled"] = persona_cfg["event_recording_enabled"]
+            updated.append("persona.event_recording_enabled")
         for key in ("model", "base_url"):
             if key in p:
                 persona_cfg[key] = str(p[key] or "").strip()
@@ -8147,6 +8159,10 @@ async def api_config_update(request):
                 sc_persona = save_config.setdefault("persona", {})
                 if "enabled" in body["persona"]:
                     sc_persona["enabled"] = bool(body["persona"]["enabled"])
+                if "event_recording_enabled" in body["persona"]:
+                    sc_persona["event_recording_enabled"] = bool(
+                        body["persona"]["event_recording_enabled"]
+                    )
                 for key in ("model", "base_url"):
                     if key in body["persona"]:
                         sc_persona[key] = str(body["persona"][key] or "").strip()
