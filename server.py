@@ -909,21 +909,39 @@ def _has_favorite_tag(tags: list | set | tuple | None) -> bool:
     )
 
 
+_FAVORITE_REFLECTION_HEADINGS = {
+    "reflection",
+    "assistantreflection",
+    "havenreflection",
+    "favoritereason",
+    "喜欢它的原因",
+    "喜欢的原因",
+    "haven喜欢它的原因",
+    "haven喜欢的原因",
+}
+
+
+def _normalize_section_heading(value: str) -> str:
+    text = strip_wikilinks(str(value or "")).strip().lower()
+    text = re.sub(r"[#>`*_~]+", "", text).strip()
+    text = re.sub(r"[:：].*$", "", text).strip()
+    return re.sub(r"[\s_\-·/|（）()【】\[\]]+", "", text)
+
+
+def _has_favorite_reflection(content: str) -> bool:
+    text = strip_wikilinks(str(content or ""))
+    for match in re.finditer(r"(?m)^\s{0,3}#{2,6}\s+(.+?)\s*$", text):
+        if _normalize_section_heading(match.group(1)) in _FAVORITE_REFLECTION_HEADINGS:
+            return True
+    return False
+
+
 def _has_favorite_reason(content: str) -> bool:
-    text = strip_wikilinks(str(content or "")).lower()
-    return any(
-        marker in text
-        for marker in (
-            "喜欢它的原因",
-            "喜欢的原因",
-            "favorite_reason",
-            "favorite reason",
-        )
-    )
+    return _has_favorite_reflection(content)
 
 
 def _favorite_reason_error() -> str:
-    return "标记 favorite memory 需要在正文写明「喜欢它的原因」。"
+    return "标记 favorite memory 需要在正文写明「### reflection」。旧的「喜欢它的原因」仍兼容。"
 
 
 def _bucket_read_payload(bucket: dict) -> dict:
@@ -5396,7 +5414,7 @@ async def hold(
     承诺/待办: tags 传 "commitment,todo" 或 "commitment,wish"; content 写清谁答应了什么、何时/什么条件下要继续。
     给旧记忆写年轮/再次阅读感受: 优先用 comment_bucket(bucket_id="...", content="...", kind="feel", valence=0.x, arousal=0.x)。
     无源记忆的碎碎念/悄悄话: 用 hold(content="...", whisper=True, valence=0.x, arousal=0.x),会存为独立 feel 并打 whisper 标签。
-    新记忆本身值得偏爱: tags 可传 "haven_favorite,flavor_偏爱"; content 必须包含很短的 "### 喜欢它的原因" 段落。
+    新记忆本身值得偏爱: tags 可传 "haven_favorite,flavor_偏爱"; content 必须包含很短的 "### reflection" 段落。
     普通写入会新建 bucket,写 embedding,后台触发 ReflectionEngine 补 tags/confidence/memory_edges,并返回一条只读相关旧记忆。
     pinned=True 只给极少数核心准则,技术进度和运维细节不要钉选。
     feel=True 且带 source_bucket 是旧兼容入口,新调用不要使用；feel=True 但没有 source_bucket 会转为 whisper。
@@ -5668,7 +5686,7 @@ async def grow(content: str, auto: bool = False, source: str = "", context: Cont
                 content=item.get("content", ""),
             )
             if _has_favorite_tag(item_tags) and not _has_favorite_reason(item.get("content", "")):
-                results.append("⚠️favorite 缺少喜欢它的原因")
+                results.append("⚠️favorite 缺少 reflection")
                 continue
             bucket_id, result_name, is_merged, related_bucket = await _merge_or_create(
                 content=item["content"],
@@ -5854,7 +5872,7 @@ async def trace(
     """修改已有记忆,不创建新桶。
     resolved=1 或 digested=1 让旧事/已完成事项沉底; pinned=1 只给核心准则; anchor=1 只给经过时间验证且未来长期需要的锚点(受数量和年龄限制)。
     tags/domain/content 是替换不是追加: 改 tags 或正文前先 read_bucket,保留旧值后再传完整新值。
-    给旧记忆补 "喜欢它的原因" 或 affect_anchor: 先 read_bucket,再 trace(content="旧正文 + 新段落")。
+    给旧记忆补 reflection 或 affect_anchor: 先 read_bucket,再 trace(content="旧正文 + 新段落")。
     标记偏爱: 先 read_bucket 取现有 tags,再 trace(tags="原tag,haven_favorite,flavor_...")。
     delete=True 删除。只传需要改的字段,-1或空=不改。
     """

@@ -406,6 +406,21 @@ async def test_create_memory_api_writes_chatgpt_source(monkeypatch, bucket_mgr):
     assert bucket["metadata"]["updated_at"].endswith("+08:00")
 
 
+def test_favorite_reflection_heading_aliases():
+    import server
+
+    for heading in (
+        "reflection",
+        "assistant_reflection",
+        "assistant reflection",
+        "Haven喜欢它的原因",
+        "喜欢它的原因",
+    ):
+        assert server._has_favorite_reason(f"小雨把这一刻留下来。\n\n### {heading}\n\nHaven偏爱这里的温度。")
+
+    assert not server._has_favorite_reason("小雨只是提到喜欢它的原因这几个字，但没有写成段落。")
+
+
 @pytest.mark.asyncio
 async def test_create_memory_api_rejects_favorite_without_reason(monkeypatch, bucket_mgr):
     import server
@@ -427,7 +442,57 @@ async def test_create_memory_api_rejects_favorite_without_reason(monkeypatch, bu
     payload = json.loads(response.body)
 
     assert response.status_code == 400
-    assert "喜欢它的原因" in payload["error"]
+    assert "### reflection" in payload["error"]
+
+
+@pytest.mark.asyncio
+async def test_create_memory_api_accepts_favorite_with_reflection(monkeypatch, bucket_mgr):
+    import server
+
+    monkeypatch.setenv("OMBRE_GATEWAY_TOKEN", "secret")
+    monkeypatch.setattr(server, "bucket_mgr", bucket_mgr)
+    monkeypatch.setattr(server, "embedding_engine", DummyEmbeddingEngine())
+
+    response = await server.api_create_memory(
+        DummyRequest(
+            {
+                "title": "偏爱且有 reflection",
+                "content": "小雨把这一刻留下来。\n\n### reflection\n\nHaven偏爱这条记忆里的温度。",
+                "tags": ["haven_favorite"],
+            },
+            headers={"authorization": "Bearer secret"},
+        )
+    )
+    payload = json.loads(response.body)
+
+    assert response.status_code == 200
+    assert payload["status"] == "created"
+    assert len(await bucket_mgr.list_all(include_archive=True)) == 1
+
+
+@pytest.mark.asyncio
+async def test_create_memory_api_accepts_favorite_with_legacy_reason_heading(monkeypatch, bucket_mgr):
+    import server
+
+    monkeypatch.setenv("OMBRE_GATEWAY_TOKEN", "secret")
+    monkeypatch.setattr(server, "bucket_mgr", bucket_mgr)
+    monkeypatch.setattr(server, "embedding_engine", DummyEmbeddingEngine())
+
+    response = await server.api_create_memory(
+        DummyRequest(
+            {
+                "title": "偏爱且有旧原因",
+                "content": "小雨把这一刻留下来。\n\n### 喜欢它的原因\n\nHaven偏爱这条记忆里的温度。",
+                "tags": ["haven_favorite"],
+            },
+            headers={"authorization": "Bearer secret"},
+        )
+    )
+    payload = json.loads(response.body)
+
+    assert response.status_code == 200
+    assert payload["status"] == "created"
+    assert len(await bucket_mgr.list_all(include_archive=True)) == 1
 
 
 @pytest.mark.asyncio
@@ -441,7 +506,7 @@ async def test_hold_rejects_favorite_without_reason(monkeypatch, bucket_mgr, dec
 
     result = await server.hold("小雨想留下这条偏爱的记忆。", tags="haven_favorite,flavor_偏爱")
 
-    assert "喜欢它的原因" in result
+    assert "### reflection" in result
     assert await bucket_mgr.list_all(include_archive=True) == []
 
 
@@ -759,7 +824,7 @@ async def test_trace_rejects_favorite_without_reason(monkeypatch, bucket_mgr, de
     result = await server.trace(bucket_id=bucket_id, tags="haven_favorite")
     bucket = await bucket_mgr.get(bucket_id)
 
-    assert "喜欢它的原因" in result
+    assert "### reflection" in result
     assert "haven_favorite" not in bucket["metadata"].get("tags", [])
 
 
