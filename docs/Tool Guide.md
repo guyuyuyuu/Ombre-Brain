@@ -13,6 +13,7 @@
 - 还记得/之前/某个暗号/项目/偏好/边界：breath(query="关键词或原句")。
 - 明确日期的具体事件：breath(query="YYYY-MM-DD + 主题")。
 - 刚刚/刚才/上一句/刚说的暗号：优先看消息中的Just Now Chat Context，不要默认 breath(query="刚刚...")。
+- 如果上下文里出现 `[bucket_id:...]` / `[moment_id:...]`，而本轮需要更多细节：可以用 `[memory_detail ids="bucket_id_1,bucket_id_2"]` 请求细节；只填已经出现过的 bucket_id，拿到细节后自然回答，不要向用户解释这个内部请求。
 - 感受：breath(domain="feel")
 - 指定 bucket_id 或准备改旧记忆：先 read_bucket(bucket_id)。
 
@@ -26,7 +27,7 @@
 暗房：
 - 未想透、不该给用户看、不该进普通记忆的内在反思：darkroom_enter(note=...)。
 - 外部平台只暴露 darkroom_enter。没有可读暗房正文的工具，也没有显影/释放工具。
-- darkroom_enter 只返回门口事件和状态，不回显 note 正文；不要向用户复述暗房内容。
+- darkroom_enter 只返回门口事件和状态，不回显 note 正文。
 
 自省：
 - 清醒回看最近普通记忆：introspection()。
