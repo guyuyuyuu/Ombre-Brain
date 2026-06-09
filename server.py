@@ -1347,6 +1347,67 @@ def _normalize_memory_sections_for_write(content: str) -> str:
     return raw
 
 
+def _has_memory_section(content: str, section: str) -> bool:
+    target = _normalize_section_heading(section)
+    text = strip_wikilinks(str(content or ""))
+    for match in re.finditer(r"(?m)^\s{0,3}#{2,6}\s+(.+?)\s*$", text):
+        if _normalize_section_heading(match.group(1)) == target:
+            return True
+    return False
+
+
+def _leading_body_text(content: str) -> str:
+    raw = str(content or "").strip()
+    if not raw:
+        return ""
+    match = re.search(r"(?m)^\s{0,3}#{2,6}\s+\S.*$", raw)
+    return (raw[: match.start()] if match else raw).strip()
+
+
+def _fallback_moment_from_body(body_text: str) -> str:
+    text = re.sub(r"\s+", " ", str(body_text or "").strip())
+    if not text:
+        return ""
+    match = re.search(r"^(.{12,60}?[。！？!?])", text)
+    return (match.group(1) if match else text[:40]).strip()
+
+
+def _insert_moment_after_leading_body(content: str, moment: str) -> str:
+    raw = str(content or "").strip()
+    text = str(moment or "").strip()
+    if not raw or not text:
+        return raw
+    moment_block = f"### moment\n{text}"
+    match = re.search(r"(?m)^\s{0,3}#{2,6}\s+\S.*$", raw)
+    if not match:
+        return f"{raw}\n\n{moment_block}"
+    body = raw[: match.start()].strip()
+    rest = raw[match.start():].lstrip()
+    if body:
+        return f"{body}\n\n{moment_block}\n\n{rest}"
+    return f"{moment_block}\n\n{rest}"
+
+
+async def _auto_generate_moment_if_missing(content: str) -> str:
+    raw = str(content or "").strip()
+    if not raw or _has_memory_section(raw, "moment"):
+        return raw
+    body_text = _leading_body_text(raw)
+    if not body_text or len(body_text) < 10:
+        return raw
+
+    generated_moment = ""
+    generator = getattr(dehydrator, "generate_moment", None)
+    if callable(generator):
+        try:
+            generated_moment = await generator(body_text)
+        except Exception as e:
+            logger.warning("Auto moment generation failed / 自动 moment 生成失败: %s", e)
+
+    generated_moment = str(generated_moment or "").strip() or _fallback_moment_from_body(body_text)
+    return _insert_moment_after_leading_body(raw, generated_moment) if generated_moment else raw
+
+
 def _bucket_read_payload(bucket: dict) -> dict:
     meta = bucket.get("metadata", {})
     fields = [
@@ -6144,26 +6205,6 @@ async def hold(
 
     content = _normalize_memory_sections_for_write(content)
 
-    # --- Step 0.5: auto-generate moment if missing / 没有 moment 时自动生成 ---
-    if "### moment" not in content:
-        body_text = content.split("###")[0].strip() if "###" in content else content.strip()
-        if body_text and len(body_text) >= 10:
-            generated_moment = ""
-            try:
-                generated_moment = await dehydrator.generate_moment(body_text)
-            except Exception:
-                pass
-            # Fallback: first sentence if LLM failed
-            if not generated_moment:
-                m = re.search(r"^(.{12,60}?[。！？!?])", body_text)
-                generated_moment = m.group(1) if m else body_text[:40]
-            if generated_moment:
-                if "###" in content:
-                    parts = content.split("###", 1)
-                    content = f"{parts[0].strip()}\n\n### moment\n{generated_moment}\n\n### {parts[1]}"
-                else:
-                    content = f"{content.strip()}\n\n### moment\n{generated_moment}"
-
     # --- Step 1: auto-tagging / 自动打标 ---
     try:
         analysis = await dehydrator.analyze(content)
@@ -6173,6 +6214,8 @@ async def hold(
             "domain": ["未分类"], "valence": 0.5, "arousal": 0.3,
             "tags": [], "suggested_name": "",
         }
+
+    content = await _auto_generate_moment_if_missing(content)
 
     domain = analysis["domain"]
     valence = analysis["valence"]
@@ -6336,26 +6379,6 @@ async def grow(content: str, auto: bool = False, source: str = "", title: str = 
     gate_prefix = f"{_format_write_gate_result(gate_decision)}\n" if gate_decision else ""
     content = _normalize_memory_sections_for_write(content)
 
-    # --- Auto-generate moment if missing / 没有 moment 时自动生成 ---
-    if "### moment" not in content:
-        body_text = content.split("###")[0].strip() if "###" in content else content.strip()
-        if body_text and len(body_text) >= 10:
-            generated_moment = ""
-            try:
-                generated_moment = await dehydrator.generate_moment(body_text)
-            except Exception:
-                pass
-            # Fallback: first sentence if LLM failed
-            if not generated_moment:
-                m = re.search(r"^(.{12,60}?[。！？!?])", body_text)
-                generated_moment = m.group(1) if m else body_text[:40]
-            if generated_moment:
-                if "###" in content:
-                    parts = content.split("###", 1)
-                    content = f"{parts[0].strip()}\n\n### moment\n{generated_moment}\n\n### {parts[1]}"
-                else:
-                    content = f"{content.strip()}\n\n### moment\n{generated_moment}"
-
     # --- Short content fast path: skip digest, use hold logic directly ---
     # --- 短内容快速路径：跳过 digest 拆分，直接走 hold 逻辑省一次 API ---
     # For very short inputs (like "1"), calling digest is wasteful:
@@ -6371,6 +6394,7 @@ async def grow(content: str, auto: bool = False, source: str = "", title: str = 
                 "domain": ["未分类"], "valence": 0.5, "arousal": 0.3,
                 "tags": [], "suggested_name": "",
             }
+        content = await _auto_generate_moment_if_missing(content)
         fast_tags = analysis.get("tags", [])
         fast_classification = normalize_write_classification(
             memory_subject=analysis.get("memory_subject", ""),
@@ -6418,6 +6442,7 @@ async def grow(content: str, auto: bool = False, source: str = "", title: str = 
         try:
             item_tags = item.get("tags", [])
             item_content = _normalize_memory_sections_for_write(item.get("content", ""))
+            item_content = await _auto_generate_moment_if_missing(item_content)
             item_classification = normalize_write_classification(
                 memory_subject=item.get("memory_subject", ""),
                 memory_layer=item.get("memory_layer", ""),

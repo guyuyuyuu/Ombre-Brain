@@ -613,6 +613,7 @@ class Dehydrator:
         if not body or not body.strip() or len(body.strip()) < 10:
             return ""
         if not self.api_available:
+            logger.warning("Generate moment skipped: dehydration API unavailable / 生成 moment 跳过：脱水 API 不可用")
             return ""
         try:
             response = await self.client.chat.completions.create(
