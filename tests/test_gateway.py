@@ -3427,6 +3427,130 @@ def test_gateway_direct_high_value_long_bucket_renders_capsule(
     assert debug_render["detail_query"] is True
 
 
+def test_gateway_source_record_fragment_renders_capsule_not_original(
+    monkeypatch,
+    test_config,
+    bucket_mgr,
+):
+    source_id = _create_bucket(
+        bucket_mgr,
+        content="### original\n小机数据库v2.0 里写着：忠犬/小狗设定是小雨和 Haven 的角色暗号。",
+        name="小机数据库v2.0",
+        hours_ago=12,
+        tags=["raw_source"],
+        bucket_type="source",
+    )
+    app, _, _, captured = _build_service(
+        monkeypatch,
+        _gateway_config(
+            test_config,
+            recent_context_budget=0,
+            recalled_memory_budget=420,
+            related_memory_budget=0,
+            current_inner_state_interval_rounds=0,
+            query_planner_enabled=False,
+        ),
+        bucket_mgr,
+        embedding_results=[(source_id, 0.96)],
+    )
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/chat/completions",
+            headers={
+                "Authorization": "Bearer gateway-secret",
+                "X-Ombre-Session-Id": "sess-source-record-fragment",
+            },
+            json={"messages": [{"role": "user", "content": "小狗"}]},
+        )
+        debug_response = client.get(
+            "/api/debug/injections?session_id=sess-source-record-fragment&include_context=0",
+            headers={"Authorization": "Bearer gateway-secret"},
+        )
+
+    assert response.status_code == 200
+    injected = _joined_message_content(captured[0]["json"]["messages"])
+    assert "bucket_capsule" in injected
+    assert "matched_fragment:" in injected
+    assert "bucket_original" not in injected
+    debug_payload = debug_response.json()["items"][0]["payload"]
+    debug_render = debug_payload["recalled_moment_debug"][0]["direct_render"]
+    assert debug_render["shape"] == "bucket_capsule"
+    assert debug_render["reason"] == "source_record_fragment_direct"
+
+
+def test_gateway_source_record_title_match_with_content_fragment_can_diffuse(
+    monkeypatch,
+    test_config,
+    bucket_mgr,
+):
+    source_id = _create_bucket(
+        bucket_mgr,
+        content="### original\n小机数据库v2.0：忠犬/小狗设定，相关联的是少女暴君与成男艳后。",
+        name="小机数据库v2.0",
+        hours_ago=12,
+        tags=["raw_source"],
+        bucket_type="source",
+    )
+    target_id = _create_bucket(
+        bucket_mgr,
+        content="### moment\n小雨问反义词时，Haven 回答过忠犬。",
+        name="少女暴君与成男艳后",
+        hours_ago=24,
+        tags=["忠犬"],
+    )
+    noise_id = _create_bucket(
+        bucket_mgr,
+        content="### moment\n这是一条没有片段主题证据的远处背景。",
+        name="无关大背景",
+        hours_ago=24,
+    )
+    cfg = _gateway_config(
+        test_config,
+        recent_context_budget=0,
+        recalled_memory_budget=420,
+        related_memory_budget=800,
+        inject_total_budget=1800,
+        current_inner_state_interval_rounds=0,
+        query_planner_enabled=False,
+    )
+    cfg["memory_diffusion"] = {"max_hops": 1, "min_activation": 0.0, "top_k": 4}
+    app, _, _, captured = _build_service(
+        monkeypatch,
+        cfg,
+        bucket_mgr,
+        embedding_results=[(source_id, 0.96)],
+    )
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/chat/completions",
+            headers={
+                "Authorization": "Bearer gateway-secret",
+                "X-Ombre-Session-Id": "sess-source-record-fragment-diffuse",
+            },
+            json={"messages": [{"role": "user", "content": "小机数据库v2.0"}]},
+        )
+        debug_response = client.get(
+            "/api/debug/injections?session_id=sess-source-record-fragment-diffuse&include_context=0",
+            headers={"Authorization": "Bearer gateway-secret"},
+        )
+
+    assert response.status_code == 200
+    injected = _joined_message_content(captured[0]["json"]["messages"])
+    assert "bucket_capsule" in injected
+    assert "少女暴君与成男艳后" in injected
+    assert "无关大背景" not in injected
+    debug_payload = debug_response.json()["items"][0]["payload"]
+    assert source_id in debug_payload["recalled_bucket_ids"]
+    assert target_id in debug_payload["diffused_bucket_ids"]
+    assert noise_id not in debug_payload["diffused_bucket_ids"]
+    assert any(
+        "source_record_fragment_topic_evidence" in str(row.get("path", {}))
+        for row in debug_payload["diffused_moment_debug"]
+    )
+
+
 def test_gateway_diffused_memory_renders_temperature_context(
     monkeypatch,
     test_config,
