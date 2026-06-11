@@ -1,5 +1,6 @@
 import pytest
 import json
+import re
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
@@ -127,6 +128,56 @@ class FakeBucketManager:
 
     async def touch(self, bucket_id: str) -> None:
         self.touched.append(bucket_id)
+
+    def filter_specific_lexical_terms(
+        self,
+        terms: list[str],
+        buckets: list[dict],
+        *,
+        preserve_terms: set[str] | None = None,
+        min_specificity: float = 0.34,
+        max_document_ratio: float = 0.45,
+    ) -> list[str]:
+        preserve = {self._compact(term) for term in (preserve_terms or set()) if self._compact(term)}
+        haystacks = [self._haystack(bucket) for bucket in buckets or [] if bucket.get("id")]
+        total = len(haystacks)
+        if not total:
+            return list(terms or [])
+        max_df = max(1, int(total * max_document_ratio))
+        if total < 8:
+            max_df = max(1, total // 2)
+        kept = []
+        seen = set()
+        for term in terms or []:
+            cleaned = str(term or "").strip()
+            key = self._compact(cleaned)
+            if not cleaned or not key or key in seen:
+                continue
+            seen.add(key)
+            if key in preserve:
+                kept.append(cleaned)
+                continue
+            df = sum(1 for haystack in haystacks if key in haystack)
+            if 0 < df <= max_df:
+                kept.append(cleaned)
+        return kept
+
+    @staticmethod
+    def _compact(value: object) -> str:
+        return re.sub(r"[^0-9a-z\u4e00-\u9fff_.:-]+", "", str(value or "").strip().lower())
+
+    def _haystack(self, bucket: dict) -> str:
+        meta = bucket.get("metadata", {}) if isinstance(bucket.get("metadata"), dict) else {}
+        return self._compact(
+            " ".join(
+                [
+                    str(meta.get("name") or bucket.get("id") or ""),
+                    " ".join(str(tag) for tag in meta.get("tags", []) or []),
+                    " ".join(str(item) for item in meta.get("domain", []) or []),
+                    str(bucket.get("content") or ""),
+                ]
+            )
+        )
 
     def _parse_iso_datetime(self, value):
         if not value:
@@ -2087,7 +2138,8 @@ async def test_career_query_does_not_let_work_word_pull_unrelated_bucket(patch_b
         ),
     )
 
-    terms = server._breath_lexical_match_terms("找工作 工作 面试")
+    all_buckets = await server.bucket_mgr.list_all(include_archive=False)
+    terms = server._breath_lexical_match_terms("找工作 工作 面试", all_buckets=all_buckets)
     result = await server.breath(
         query="找工作 工作 面试",
         max_results=1,

@@ -4462,6 +4462,189 @@ def test_gateway_just_now_context_uses_conversation_turns_and_skips_memory_recal
     assert debug["injected_bucket_ids"] == []
 
 
+def test_gateway_date_recall_uses_date_turns_and_topic_filters_before_embedding(
+    monkeypatch,
+    test_config,
+    bucket_mgr,
+):
+    target = datetime.now(timezone(timedelta(hours=8))) - timedelta(days=1)
+    created_at = target.replace(hour=20, minute=15, second=0, microsecond=0)
+    cfg = _gateway_config(
+        test_config,
+        recent_context_budget=800,
+        recalled_memory_budget=500,
+        related_memory_budget=420,
+        inject_total_budget=2200,
+        current_inner_state_interval_rounds=0,
+        relationship_weather_interval_rounds=0,
+        favorite_memory_interval_rounds=0,
+        date_recall_enabled=True,
+        date_recall_budget=620,
+        date_recall_max_turns=4,
+        date_recall_max_buckets=4,
+    )
+    job_bucket = _create_bucket(
+        bucket_mgr,
+        content="昨天晚上，小雨继续整理求职材料，重点是简历投递和面试问题。",
+        name="小雨求职昨日进展",
+        hours_ago=24,
+        importance=9,
+        domain=["求职"],
+        tags=["简历"],
+    )
+    _create_bucket(
+        bucket_mgr,
+        content="昨天的小点心记录：蛋糕味道很甜，和晚饭有关。",
+        name="昨天蛋糕",
+        hours_ago=24,
+        importance=8,
+        domain=["饮食"],
+    )
+    embedding_queries: list[str] = []
+    _, service, state_store, _ = _build_service(
+        monkeypatch,
+        cfg,
+        bucket_mgr,
+        embedding_results=[(job_bucket, 0.99)],
+        embedding_queries=embedding_queries,
+    )
+    state_store.record_success("sess-date-recall", [], completed_at=datetime.now() - timedelta(minutes=5))
+    state_store.record_conversation_turn(
+        profile_id="haven_xiaoyu",
+        session_id="window-yesterday",
+        round_id=1,
+        user_text="小雨说昨天先改简历再投递，继续找工作。",
+        assistant_text="Haven陪她把求职节奏压稳一点。",
+        model="dummy",
+        client="unit-test",
+        route="/v1/chat/completions",
+        created_at=created_at,
+    )
+    state_store.record_conversation_turn(
+        profile_id="haven_xiaoyu",
+        session_id="window-yesterday",
+        round_id=2,
+        user_text="昨天还聊了蛋糕好不好吃。",
+        assistant_text="这条不该出现在主题结果里。",
+        model="dummy",
+        client="unit-test",
+        route="/v1/chat/completions",
+        created_at=created_at + timedelta(minutes=5),
+    )
+
+    payload, recalled_ids, debug = _run(
+        service.prepare_payload(
+            {"messages": [{"role": "user", "content": "昨天聊找工作吗"}]},
+            "sess-date-recall",
+            include_debug=True,
+        )
+    )
+    injected = _joined_message_content(payload["messages"])
+
+    assert recalled_ids == [job_bucket]
+    assert embedding_queries == []
+    assert "Date Recall" in injected
+    assert "找工作" in injected
+    assert "简历" in injected
+    assert "昨天蛋糕" not in injected
+    assert "这条不该出现在主题结果里" not in injected
+    assert "Recalled Memory" not in injected
+    assert "Recent Context" not in injected
+    assert debug["date_recall_injected"] is True
+    assert debug["date_recall_bucket_ids"] == [job_bucket]
+    assert "找工作" in debug["date_recall_debug"]["topic_terms"]
+    assert debug["query_planner_debug"]["skip_reason"] == "date_recall"
+
+
+def test_gateway_date_recall_handles_plain_yesterday_chat_question(
+    monkeypatch,
+    test_config,
+    bucket_mgr,
+):
+    target = datetime.now(timezone(timedelta(hours=8))) - timedelta(days=1)
+    created_at = target.replace(hour=21, minute=30, second=0, microsecond=0)
+    cfg = _gateway_config(
+        test_config,
+        recent_context_budget=800,
+        recalled_memory_budget=500,
+        related_memory_budget=420,
+        inject_total_budget=1800,
+        current_inner_state_interval_rounds=0,
+        relationship_weather_interval_rounds=0,
+        favorite_memory_interval_rounds=0,
+        date_recall_enabled=True,
+        date_recall_budget=500,
+        date_recall_max_turns=4,
+        date_recall_max_buckets=2,
+    )
+    embedding_queries: list[str] = []
+    _, service, state_store, _ = _build_service(
+        monkeypatch,
+        cfg,
+        bucket_mgr,
+        embedding_results=[],
+        embedding_queries=embedding_queries,
+    )
+    state_store.record_success("sess-date-recall-plain", [], completed_at=datetime.now() - timedelta(minutes=5))
+    state_store.record_conversation_turn(
+        profile_id="haven_xiaoyu",
+        session_id="window-yesterday",
+        round_id=1,
+        user_text="昨天我们聊了小机数据库和忠犬设定。",
+        assistant_text="Haven把小机数据库当成记忆系统的一个名字。",
+        model="dummy",
+        client="unit-test",
+        route="/v1/chat/completions",
+        created_at=created_at,
+    )
+
+    payload, recalled_ids, debug = _run(
+        service.prepare_payload(
+            {"messages": [{"role": "user", "content": "昨天在聊什么"}]},
+            "sess-date-recall-plain",
+            include_debug=True,
+        )
+    )
+    injected = _joined_message_content(payload["messages"])
+
+    assert recalled_ids == []
+    assert embedding_queries == []
+    assert "Date Recall" in injected
+    assert "小机数据库和忠犬设定" in injected
+    assert "Recalled Memory" not in injected
+    assert debug["date_recall_injected"] is True
+    assert debug["date_recall_debug"]["topic_terms"] == []
+
+
+def test_gateway_plain_today_status_does_not_trigger_date_recall(monkeypatch, test_config, bucket_mgr):
+    cfg = _gateway_config(
+        test_config,
+        recent_context_budget=0,
+        recalled_memory_budget=0,
+        related_memory_budget=0,
+        current_inner_state_interval_rounds=0,
+        relationship_weather_interval_rounds=0,
+        date_recall_enabled=True,
+        date_persona_trace_enabled=True,
+    )
+    _, service, state_store, _ = _build_service(monkeypatch, cfg, bucket_mgr)
+    state_store.record_success("sess-today-status-date-recall", [], completed_at=datetime.now() - timedelta(minutes=5))
+
+    payload, recalled_ids, debug = _run(
+        service.prepare_payload(
+            {"messages": [{"role": "user", "content": "今天状态怎么样"}]},
+            "sess-today-status-date-recall",
+            include_debug=True,
+        )
+    )
+    injected = _joined_message_content(payload["messages"])
+
+    assert recalled_ids == []
+    assert "Date Recall" not in injected
+    assert debug["date_recall_injected"] is False
+    assert debug["date_recall_debug"]["status"] == "skipped"
+
+
 def test_gateway_records_successful_chat_turn_for_just_now_context(
     monkeypatch,
     test_config,

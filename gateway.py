@@ -40,6 +40,7 @@ from memory_edges import MemoryEdgeStore
 from memory_moments import MemoryMomentStore, parse_bucket_moments
 from memory_relevance import (
     active_facets,
+    expanded_terms_for_query,
     facets_for_node,
     facets_for_text,
     memory_relevance_options_from_config,
@@ -339,6 +340,13 @@ class GatewayService:
             self.gateway_cfg.get("date_persona_trace_include_daily"),
             True,
         )
+        self.date_recall_enabled = self._bool_config_value(
+            self.gateway_cfg.get("date_recall_enabled"),
+            True,
+        )
+        self.date_recall_budget = max(0, int(self.gateway_cfg.get("date_recall_budget", 520)))
+        self.date_recall_max_turns = max(1, min(12, int(self.gateway_cfg.get("date_recall_max_turns", 8))))
+        self.date_recall_max_buckets = max(0, min(8, int(self.gateway_cfg.get("date_recall_max_buckets", 4))))
         gateway_timezone = str(
             self.gateway_cfg.get("timezone")
             or (config.get("reflection", {}) if isinstance(config.get("reflection", {}), dict) else {}).get("timezone")
@@ -496,6 +504,10 @@ class GatewayService:
                 "date_persona_trace_enabled": self.date_persona_trace_enabled,
                 "date_persona_trace_budget": self.date_persona_trace_budget,
                 "date_persona_trace_max_events": self.date_persona_trace_max_events,
+                "date_recall_enabled": self.date_recall_enabled,
+                "date_recall_budget": self.date_recall_budget,
+                "date_recall_max_turns": self.date_recall_max_turns,
+                "date_recall_max_buckets": self.date_recall_max_buckets,
                 "recalled_memory_budget": self.recalled_budget,
                 "related_memory_budget": self.related_memory_budget,
                 "current_inner_state_interval_rounds": self.current_inner_state_interval_rounds,
@@ -547,6 +559,10 @@ class GatewayService:
             "date_persona_trace_budget": self.date_persona_trace_budget,
             "date_persona_trace_max_events": self.date_persona_trace_max_events,
             "date_persona_trace_include_daily": self.date_persona_trace_include_daily,
+            "date_recall_enabled": self.date_recall_enabled,
+            "date_recall_budget": self.date_recall_budget,
+            "date_recall_max_turns": self.date_recall_max_turns,
+            "date_recall_max_buckets": self.date_recall_max_buckets,
             "recalled_memory_budget": self.recalled_budget,
             "related_memory_budget": self.related_memory_budget,
             "current_inner_state_interval_rounds": self.current_inner_state_interval_rounds,
@@ -674,6 +690,22 @@ class GatewayService:
             )
             self.gateway_cfg["date_persona_trace_include_daily"] = self.date_persona_trace_include_daily
             updated.append("gateway.date_persona_trace_include_daily")
+        if "date_recall_enabled" in payload:
+            self.date_recall_enabled = self._bool_config_value(payload["date_recall_enabled"], True)
+            self.gateway_cfg["date_recall_enabled"] = self.date_recall_enabled
+            updated.append("gateway.date_recall_enabled")
+        if "date_recall_budget" in payload:
+            self.date_recall_budget = max(0, int(payload["date_recall_budget"]))
+            self.gateway_cfg["date_recall_budget"] = self.date_recall_budget
+            updated.append("gateway.date_recall_budget")
+        if "date_recall_max_turns" in payload:
+            self.date_recall_max_turns = max(1, min(12, int(payload["date_recall_max_turns"])))
+            self.gateway_cfg["date_recall_max_turns"] = self.date_recall_max_turns
+            updated.append("gateway.date_recall_max_turns")
+        if "date_recall_max_buckets" in payload:
+            self.date_recall_max_buckets = max(0, min(8, int(payload["date_recall_max_buckets"])))
+            self.gateway_cfg["date_recall_max_buckets"] = self.date_recall_max_buckets
+            updated.append("gateway.date_recall_max_buckets")
         if "recalled_memory_budget" in payload:
             self.recalled_budget = max(0, int(payload["recalled_memory_budget"]))
             self.gateway_cfg["recalled_memory_budget"] = self.recalled_budget
@@ -1204,6 +1236,10 @@ class GatewayService:
             self.just_now_context_enabled
             and self._query_requests_just_now_context(current_user_query)
         )
+        date_recall_requested = (
+            self.date_recall_enabled
+            and self._query_requests_date_recall(current_user_query)
+        )
 
         persona_block = ""
         core_memory = ""
@@ -1211,6 +1247,9 @@ class GatewayService:
         portrait_memory_debug: dict[str, Any] = self._portrait_memory_debug_base()
         just_now_context = ""
         just_now_context_debug: dict[str, Any] = self._just_now_context_debug_base(current_user_query)
+        date_recall = ""
+        date_recall_debug: dict[str, Any] = self._date_recall_debug_base(current_user_query)
+        date_recall_bucket_ids: list[str] = []
         recent_context = ""
         recent_context_reason = ""
         recalled_moments: list[dict] = []
@@ -1248,6 +1287,7 @@ class GatewayService:
                 skip_for_targeted_detail
                 or needs_handoff_first
                 or just_now_context_requested
+                or date_recall_requested
             )
             if needs_handoff_first:
                 query_planner_debug["skip_reason"] = (
@@ -1271,6 +1311,12 @@ class GatewayService:
                 just_now_context, just_now_context_debug = self._build_just_now_chat_context(
                     current_user_query,
                 )
+            elif date_recall_requested:
+                query_planner_debug["skip_reason"] = "date_recall"
+                date_recall, date_recall_debug, date_recall_bucket_ids = self._build_date_recall_context(
+                    current_user_query,
+                    all_buckets,
+                )
             if self.persona_engine.enabled and self._should_inject_interval(
                 session_id,
                 self.current_inner_state_interval_rounds,
@@ -1282,15 +1328,17 @@ class GatewayService:
             if self.persona_engine.enabled and persona_state is None:
                 persona_state = self._get_persona_state_for_context_mode(session_id)
             context_mode = self._classify_context_mode(current_user_query, persona_state)
-            if not needs_handoff_first and not just_now_context_requested and self._should_inject_interval(
+            if not needs_handoff_first and not just_now_context_requested and not date_recall_requested and self._should_inject_interval(
                 session_id,
                 self.core_memory_interval_rounds,
             ):
                 core_memory = await self._build_core_memory_block(all_buckets)
-            if needs_handoff_first or just_now_context_requested:
+            if needs_handoff_first or just_now_context_requested or date_recall_requested:
                 portrait_memory_debug["skip_reason"] = (
                     "just_now_context"
                     if just_now_context_requested and not needs_handoff_first
+                    else "date_recall"
+                    if date_recall_requested and not needs_handoff_first
                     else ("handoff_trigger" if is_handoff_trigger_query else "session_start_handoff")
                 )
             else:
@@ -1407,6 +1455,7 @@ class GatewayService:
                     current_direct_bucket_ids
                     + current_diffused_bucket_ids
                     + favorite_ids
+                    + date_recall_bucket_ids
                 )
             )
             current_shown_moment_ids = list(
@@ -1441,7 +1490,7 @@ class GatewayService:
                     "memory_detail again. Do not mention this line in the final answer."
                 )
             reliable_dynamic_context = bool(recalled_memory.strip() or related_memory.strip())
-            if not just_now_context_requested and self._should_inject_recent_context(
+            if not just_now_context_requested and not date_recall_requested and self._should_inject_recent_context(
                 session_id,
                 current_user_query,
                 has_reliable_dynamic_context=reliable_dynamic_context,
@@ -1470,6 +1519,7 @@ class GatewayService:
                         for moment in recalled_moments
                         if moment.get("bucket_id")
                     ]
+                    + date_recall_bucket_ids
                     + favorite_ids
                     + [
                         str(bucket_id)
@@ -1489,6 +1539,7 @@ class GatewayService:
             core_memory=core_memory,
             portrait_memory=portrait_memory,
             just_now_context=just_now_context,
+            date_recall=date_recall,
             recent_context=recent_context,
             recalled_memory=recalled_memory,
             date_persona_trace=date_persona_trace,
@@ -1525,6 +1576,9 @@ class GatewayService:
                 recalled_memory=recalled_memory,
                 date_persona_trace=date_persona_trace,
                 date_persona_trace_debug=date_persona_trace_debug,
+                date_recall=date_recall,
+                date_recall_debug=date_recall_debug,
+                date_recall_bucket_ids=date_recall_bucket_ids,
                 related_memory=related_memory,
                 targeted_memory_detail=targeted_memory_detail,
                 targeted_memory_detail_debug=targeted_memory_detail_debug,
@@ -4108,6 +4162,343 @@ class GatewayService:
             "turn_count": 0,
             "selected_turn_ids": [],
         }
+
+    def _date_recall_debug_base(self, query: str = "") -> dict[str, Any]:
+        return {
+            "enabled": self.date_recall_enabled,
+            "status": "skipped",
+            "skip_reason": "",
+            "query_preview": self._clip_text(query, 160),
+            "date": "",
+            "label": "",
+            "topic_terms": [],
+            "turn_count": 0,
+            "bucket_count": 0,
+            "selected_turn_ids": [],
+            "selected_bucket_ids": [],
+        }
+
+    def _build_date_recall_context(
+        self,
+        query_text: str,
+        all_buckets: list[dict],
+    ) -> tuple[str, dict[str, Any], list[str]]:
+        debug = self._date_recall_debug_base(query_text)
+        debug["triggered"] = True
+        if not self.date_recall_enabled:
+            debug["skip_reason"] = "disabled"
+            return "", debug, []
+        if self.date_recall_budget <= 0:
+            debug["skip_reason"] = "budget_disabled"
+            return "", debug, []
+        hint = self._query_date_recall_hint(query_text)
+        if not hint:
+            debug["skip_reason"] = "no_date_hint"
+            return "", debug, []
+
+        date_key = hint["date"]
+        start_at, end_at = self._date_recall_range(date_key)
+        topic_terms = self._date_recall_topic_terms(query_text)
+        turns = self._date_recall_turns_for_range(start_at, end_at, topic_terms)
+        buckets = self._date_recall_buckets_for_date(all_buckets, date_key, topic_terms)
+        buckets = buckets[: self.date_recall_max_buckets]
+        bucket_ids = [str(bucket.get("id") or "") for bucket in buckets if bucket.get("id")]
+
+        debug.update(
+            {
+                "date": date_key,
+                "label": hint["label"],
+                "topic_terms": topic_terms,
+                "turn_count": len(turns),
+                "bucket_count": len(buckets),
+                "selected_turn_ids": [int(turn.get("id") or 0) for turn in turns],
+                "selected_bucket_ids": bucket_ids,
+            }
+        )
+        if not turns and not buckets:
+            debug["skip_reason"] = "no_material"
+            return "", debug, []
+
+        lines = [
+            f"Date-bounded recall for {date_key} ({hint['label']}).",
+            "Use this as primary evidence for questions about what was discussed or happened on that date.",
+        ]
+        if topic_terms:
+            lines.append("topic_filter: " + ", ".join(topic_terms[:8]))
+        if turns:
+            lines.append("conversation_turns:")
+            for turn in reversed(turns):
+                lines.extend(self._format_date_recall_turn_lines(turn))
+        if buckets:
+            lines.append("memory_buckets:")
+            for bucket in buckets:
+                lines.append(self._format_date_recall_bucket_line(bucket))
+
+        text = self._trim_text("\n".join(lines), self.date_recall_budget)
+        if not text.strip():
+            debug["skip_reason"] = "empty_context"
+            return "", debug, []
+        debug["status"] = "injected"
+        return text, debug, bucket_ids
+
+    def _date_recall_turns_for_range(
+        self,
+        start_at: datetime,
+        end_at: datetime,
+        topic_terms: list[str],
+    ) -> list[dict[str, Any]]:
+        profile_id = str(getattr(self.persona_engine, "profile_id", "") or "default")
+        limit = max(self.date_recall_max_turns * 4, self.date_recall_max_turns)
+        turns = self.state_store.list_conversation_turns_between(
+            profile_id=profile_id,
+            start_at=start_at,
+            end_at=end_at,
+            limit=limit,
+        )
+        if topic_terms:
+            turns = [
+                turn for turn in turns
+                if self._date_recall_text_has_topic_terms(
+                    str(turn.get("user_text") or "") + "\n" + str(turn.get("assistant_text") or ""),
+                    topic_terms,
+                )
+            ]
+        return turns[: self.date_recall_max_turns]
+
+    def _date_recall_buckets_for_date(
+        self,
+        all_buckets: list[dict],
+        date_key: str,
+        topic_terms: list[str],
+    ) -> list[dict]:
+        selected = []
+        for bucket in all_buckets or []:
+            if not isinstance(bucket, dict) or is_self_anchor_bucket(bucket):
+                continue
+            if not can_bucket_be_recent_context(bucket, explicit_lookup=True):
+                continue
+            if not self._bucket_matches_date_recall(bucket, date_key):
+                continue
+            if topic_terms and not self._date_recall_text_has_topic_terms(
+                self._date_recall_bucket_text(bucket),
+                topic_terms,
+            ):
+                continue
+            selected.append(bucket)
+        selected.sort(key=self._date_recall_bucket_sort_key, reverse=True)
+        return selected
+
+    def _format_date_recall_turn_lines(self, turn: dict[str, Any]) -> list[str]:
+        created = self._format_conversation_turn_time(turn.get("created_at"))
+        session_label = self._clip_text(str(turn.get("session_id") or ""), 18)
+        header_bits = [created] if created else []
+        if session_label:
+            header_bits.append(f"session:{session_label}")
+        header = f"- [{' '.join(header_bits)}]" if header_bits else "-"
+        lines = []
+        user_text = self._clean_conversation_turn_text(turn.get("user_text", ""))
+        assistant_text = self._clean_conversation_turn_text(turn.get("assistant_text", ""))
+        if user_text:
+            lines.append(f"{header} {self.identity['user_display_name']}: {self._clip_text(user_text, 180)}")
+        if assistant_text:
+            lines.append(f"  {self.identity['ai_name']}: {self._clip_text(assistant_text, 180)}")
+        return lines
+
+    def _format_date_recall_bucket_line(self, bucket: dict) -> str:
+        meta = bucket.get("metadata", {}) if isinstance(bucket.get("metadata"), dict) else {}
+        bucket_id = str(bucket.get("id") or "")
+        title = str(meta.get("name") or bucket_id)
+        date_part = " ".join(self._bucket_date_meta_parts(bucket))
+        summary = (
+            str(meta.get("annotation_summary") or meta.get("summary") or "").strip()
+            or self._clip_text(self._rendered_bucket_content(bucket), 220)
+        )
+        return f"- [bucket_id:{bucket_id}] {date_part} {title}: {self._clip_text(summary, 260)}".strip()
+
+    def _query_requests_date_recall(self, query: str) -> bool:
+        text = str(query or "").strip()
+        if not text or not self._query_date_recall_hint(text):
+            return False
+        if self._query_requests_just_now_context(text):
+            return False
+        plain_today_status = (
+            "今天" in text
+            and any(marker in text for marker in ("状态", "怎么样", "如何"))
+            and not any(marker in text for marker in ("聊", "说", "提", "讲", "发生", "记得", "为什么", "那次", "这次"))
+        )
+        if plain_today_status:
+            return False
+        recall_markers = (
+            "聊",
+            "说",
+            "提",
+            "讲",
+            "讨论",
+            "做了什么",
+            "发生了什么",
+            "发生什么",
+            "发生过什么",
+            "的事",
+            "什么事",
+            "那次",
+            "这次",
+            "事情",
+            "怎么回事",
+            "怎么说",
+        )
+        return any(marker in text for marker in recall_markers)
+
+    def _query_date_recall_hint(self, query: str) -> dict[str, str] | None:
+        text = str(query or "").strip()
+        if not text:
+            return None
+        now = datetime.now(self.gateway_tz)
+        explicit = re.search(r"(20\d{2})[-/.年](\d{1,2})[-/.月](\d{1,2})日?", text)
+        if explicit:
+            year, month, day = (int(part) for part in explicit.groups())
+            try:
+                target = datetime(year, month, day, tzinfo=self.gateway_tz).date()
+            except ValueError:
+                return None
+            return {"date": target.isoformat(), "label": target.isoformat()}
+        relative_days = [
+            ("大前天", -3),
+            ("前天", -2),
+            ("昨晚", -1),
+            ("昨天", -1),
+            ("昨日", -1),
+            ("今晚", 0),
+            ("今天", 0),
+        ]
+        for label, offset in relative_days:
+            if label in text:
+                return {
+                    "date": (now + timedelta(days=offset)).date().isoformat(),
+                    "label": label,
+                }
+        return None
+
+    def _date_recall_range(self, date_key: str) -> tuple[datetime, datetime]:
+        target = datetime.fromisoformat(f"{date_key}T00:00:00").replace(tzinfo=self.gateway_tz)
+        return target, target + timedelta(days=1)
+
+    def _date_recall_topic_terms(self, query: str) -> list[str]:
+        topic_query = self._strip_date_recall_query_shell(query)
+        if not topic_query:
+            return []
+        terms = list(self.recall_policy.specific_query_terms(topic_query))
+        terms.extend(re.findall(r"[A-Za-z]+[A-Za-z0-9_.:-]*|[\u4e00-\u9fff]{2,}", topic_query))
+        expanded = expanded_terms_for_query(topic_query, self.relevance_options)
+        if re.search(r"[\u4e00-\u9fff]", topic_query):
+            expanded = [
+                *[term for term in expanded if re.search(r"[\u4e00-\u9fff]", str(term or ""))],
+                *[term for term in expanded if not re.search(r"[\u4e00-\u9fff]", str(term or ""))],
+            ]
+        terms.extend(expanded)
+        return self._dedupe_date_recall_topic_terms(terms)
+
+    def _strip_date_recall_query_shell(self, query: str) -> str:
+        text = str(query or "")
+        text = re.sub(r"20\d{2}[-/.年]\d{1,2}[-/.月]\d{1,2}日?", " ", text)
+        shell_terms = {
+            "大前天", "前天", "昨晚", "昨天", "昨日", "今晚", "今天",
+            "我们", "咱们", "哥哥", "宝宝", "老婆", "我", "你",
+            "还记得", "记不记得", "记得", "想起", "想起来", "回忆", "记忆",
+            "在聊什么", "聊了什么", "聊什么", "聊过什么", "说了什么", "说什么",
+            "提到什么", "讲了什么", "讨论什么", "做了什么", "发生了什么",
+            "在聊", "聊", "说", "提到", "提", "讲", "讨论", "发生", "做",
+            "那次", "这次", "事情", "事", "什么", "为什么", "怎么回事", "怎么说",
+            "有", "没有", "有没有", "是", "吗", "么", "嘛", "呢", "啊", "呀", "啦", "吧",
+            "的", "了", "一下", "再", "一次",
+        }
+        identity_terms = [
+            self.identity.get("ai_name"),
+            self.identity.get("user_name"),
+            self.identity.get("user_display_name"),
+            *(self.identity.get("user_aliases") or []),
+        ]
+        shell_terms.update(str(term) for term in identity_terms if str(term or "").strip())
+        for term in sorted(shell_terms, key=lambda item: len(str(item)), reverse=True):
+            if str(term).strip():
+                text = text.replace(str(term), " ")
+        return re.sub(r"[\s，。！？、,.!?:：;；~～（）()\[\]【】「」『』“”\"'`]+", " ", text).strip()
+
+    @staticmethod
+    def _dedupe_date_recall_topic_terms(terms: list[str]) -> list[str]:
+        stop = {"工作吗", "状态", "怎么样", "如何", "知道", "当前", "现在", "最近", "career"}
+        candidates = []
+        seen = set()
+        for index, term in enumerate(terms or []):
+            cleaned = str(term or "").strip()
+            key = re.sub(r"[^0-9a-z\u4e00-\u9fff_.:-]+", "", cleaned.lower())
+            if not key or key in seen or key in stop:
+                continue
+            if re.fullmatch(r"[a-z0-9_.:-]+", key) and len(key) < 3 and not re.search(r"\d", key):
+                continue
+            if re.fullmatch(r"[\u4e00-\u9fff]+", key) and len(key) < 2:
+                continue
+            seen.add(key)
+            candidates.append((index, cleaned, key))
+        kept: list[tuple[int, str, str]] = []
+        for index, cleaned, key in sorted(candidates, key=lambda item: (-len(item[2]), item[0])):
+            if any(key in existing_key for _i, _term, existing_key in kept):
+                continue
+            kept.append((index, cleaned, key))
+        kept.sort(key=lambda item: item[0])
+        return [term for _index, term, _key in kept[:8]]
+
+    def _date_recall_text_has_topic_terms(self, text: str, topic_terms: list[str]) -> bool:
+        if not topic_terms:
+            return True
+        haystack = self._compact_lookup_key(text)
+        return any(self._compact_lookup_key(term) in haystack for term in topic_terms if self._compact_lookup_key(term))
+
+    def _date_recall_bucket_text(self, bucket: dict) -> str:
+        meta = bucket.get("metadata", {}) if isinstance(bucket.get("metadata"), dict) else {}
+        return " ".join(
+            [
+                str(meta.get("name") or bucket.get("id") or ""),
+                str(meta.get("annotation_summary") or meta.get("summary") or ""),
+                " ".join(str(tag) for tag in meta.get("tags", []) or []),
+                " ".join(str(item) for item in meta.get("domain", []) or []),
+                self._rendered_bucket_content(bucket),
+            ]
+        )
+
+    def _bucket_matches_date_recall(self, bucket: dict, date_key: str) -> bool:
+        meta = bucket.get("metadata", {}) if isinstance(bucket.get("metadata"), dict) else {}
+        for key in ("date", "created", "updated_at", "last_active"):
+            if self._local_date_key(meta.get(key)) == date_key:
+                return True
+        return False
+
+    def _date_recall_bucket_sort_key(self, bucket: dict) -> tuple[str, int]:
+        meta = bucket.get("metadata", {}) if isinstance(bucket.get("metadata"), dict) else {}
+        date_value = ""
+        for key in ("updated_at", "last_active", "created", "date"):
+            raw = str(meta.get(key) or "")
+            if raw > date_value:
+                date_value = raw
+        try:
+            importance = int(meta.get("importance", 5))
+        except (TypeError, ValueError):
+            importance = 5
+        return date_value, importance
+
+    def _local_date_key(self, value: Any) -> str:
+        text = str(value or "").strip()
+        if not text:
+            return ""
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", text):
+            return text
+        try:
+            parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError:
+            match = re.match(r"^\d{4}-\d{2}-\d{2}", text)
+            return match.group(0) if match else ""
+        if parsed.tzinfo is not None:
+            parsed = parsed.astimezone(self.gateway_tz)
+        return parsed.date().isoformat()
 
     def _build_just_now_chat_context(self, query_text: str) -> tuple[str, dict[str, Any]]:
         debug = self._just_now_context_debug_base(query_text)
@@ -7601,6 +7992,7 @@ class GatewayService:
         handoff_tool_hint: str = "",
         context_mode: str = "",
         date_persona_trace: str = "",
+        date_recall: str = "",
     ) -> tuple[str, str]:
         has_dynamic_context = any(
             section.strip()
@@ -7609,6 +8001,7 @@ class GatewayService:
                 relationship_weather,
                 favorite_memory,
                 just_now_context,
+                date_recall,
                 recent_context,
                 recalled_memory,
                 date_persona_trace,
@@ -7648,6 +8041,7 @@ class GatewayService:
                     dynamic_sections.extend(["", title, content])
 
             add_section("Just Now Chat Context", just_now_context)
+            add_section("Date Recall", date_recall)
             add_section("Recent Context", recent_context)
             add_section("Context Mode", f"context_mode: {context_mode}" if context_mode.strip() else "")
             add_section("Memory Detail Request", memory_detail_recall_instruction)
@@ -7986,6 +8380,9 @@ class GatewayService:
         dream_context_status: dict[str, Any],
         just_now_context: str,
         just_now_context_debug: dict[str, Any],
+        date_recall: str,
+        date_recall_debug: dict[str, Any],
+        date_recall_bucket_ids: list[str],
         recent_context: str,
         recent_context_reason: str,
         favorite_ids: list[str],
@@ -8034,7 +8431,13 @@ class GatewayService:
             if str(item or "").strip()
         ]
         injected_bucket_ids = list(
-            dict.fromkeys(recalled_bucket_ids + diffused_bucket_ids + favorite_ids + targeted_bucket_ids)
+            dict.fromkeys(
+                recalled_bucket_ids
+                + diffused_bucket_ids
+                + favorite_ids
+                + date_recall_bucket_ids
+                + targeted_bucket_ids
+            )
         )
         explicit_lookup = self._query_explicitly_requests_caution_memory(query)
         bucket_map = {
@@ -8051,6 +8454,9 @@ class GatewayService:
             "portrait_memory_debug": portrait_memory_debug or self._portrait_memory_debug_base(),
             "just_now_context_injected": bool(str(just_now_context or "").strip()),
             "just_now_context_debug": just_now_context_debug or self._just_now_context_debug_base(query),
+            "date_recall_injected": bool(str(date_recall or "").strip()),
+            "date_recall_debug": date_recall_debug or self._date_recall_debug_base(query),
+            "date_recall_bucket_ids": date_recall_bucket_ids,
             "recent_context_injected": bool(str(recent_context or "").strip()),
             "recent_context_reason": recent_context_reason,
             "date_persona_trace_injected": bool(str(date_persona_trace or "").strip()),
@@ -8101,6 +8507,7 @@ class GatewayService:
             "context_mode": context_mode,
             "recalled_memory": recalled_memory,
             "just_now_context": just_now_context,
+            "date_recall": date_recall,
             "date_persona_trace": date_persona_trace,
             "targeted_memory_detail": targeted_memory_detail,
             "diffused_memory": related_memory,

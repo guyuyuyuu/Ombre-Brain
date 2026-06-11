@@ -930,6 +930,98 @@ class BucketManager:
 
         return self.calc_topic_scores(query, [bucket]).get(str(bucket.get("id") or ""), 0.0)
 
+    def filter_specific_lexical_terms(
+        self,
+        terms: list[str],
+        buckets: list[dict],
+        *,
+        preserve_terms: set[str] | None = None,
+        min_specificity: float = 0.34,
+        max_document_ratio: float = 0.45,
+    ) -> list[str]:
+        preserve = {
+            self._compact_lexical_phrase(term)
+            for term in (preserve_terms or set())
+            if self._compact_lexical_phrase(term)
+        }
+        ordered = []
+        seen = set()
+        for term in terms or []:
+            cleaned = str(term or "").strip()
+            key = self._compact_lexical_phrase(cleaned)
+            if not cleaned or not key or key in seen:
+                continue
+            seen.add(key)
+            ordered.append((cleaned, key))
+        if not ordered:
+            return []
+        if not buckets:
+            return [term for term, _key in ordered]
+
+        haystacks = [
+            self._bucket_lexical_haystack(bucket)
+            for bucket in buckets
+            if isinstance(bucket, dict) and bucket.get("id")
+        ]
+        haystacks = [haystack for haystack in haystacks if haystack]
+        total_docs = len(haystacks)
+        if total_docs <= 0:
+            return [term for term, _key in ordered]
+
+        max_df = max(1, int(math.ceil(total_docs * max_document_ratio)))
+        if total_docs < 8:
+            max_df = max(1, total_docs // 2)
+        max_idf = math.log(1.0 + (total_docs + 0.5) / 0.5)
+        kept: list[str] = []
+        for term, key in ordered:
+            if key in preserve:
+                kept.append(term)
+                continue
+            df = sum(1 for haystack in haystacks if key in haystack)
+            if df <= 0:
+                continue
+            idf = math.log(1.0 + (total_docs - df + 0.5) / (df + 0.5))
+            specificity = idf / max(max_idf, 1e-9)
+            if df <= max_df or specificity >= min_specificity:
+                kept.append(term)
+        return kept
+
+    def lexical_term_specificity_stats(self, terms: list[str], buckets: list[dict]) -> dict[str, dict[str, float]]:
+        haystacks = [
+            self._bucket_lexical_haystack(bucket)
+            for bucket in buckets or []
+            if isinstance(bucket, dict) and bucket.get("id")
+        ]
+        haystacks = [haystack for haystack in haystacks if haystack]
+        total_docs = len(haystacks)
+        max_idf = math.log(1.0 + (total_docs + 0.5) / 0.5) if total_docs else 1.0
+        stats: dict[str, dict[str, float]] = {}
+        for term in terms or []:
+            cleaned = str(term or "").strip()
+            key = self._compact_lexical_phrase(cleaned)
+            if not key or key in stats:
+                continue
+            df = sum(1 for haystack in haystacks if key in haystack) if total_docs else 0
+            idf = math.log(1.0 + (total_docs - df + 0.5) / (df + 0.5)) if df > 0 else max_idf
+            stats[cleaned] = {
+                "document_frequency": float(df),
+                "document_count": float(total_docs),
+                "specificity": round(idf / max(max_idf, 1e-9), 4),
+            }
+        return stats
+
+    def _bucket_lexical_haystack(self, bucket: dict) -> str:
+        meta = bucket.get("metadata", {}) if isinstance(bucket.get("metadata"), dict) else {}
+        text = " ".join(
+            [
+                str(meta.get("name") or ""),
+                " ".join(str(item) for item in meta.get("domain", []) or []),
+                " ".join(str(item) for item in meta.get("tags", []) or []),
+                self._bucket_searchable_content(bucket),
+            ]
+        )
+        return self._compact_lexical_phrase(text)
+
     def _bucket_searchable_content(self, bucket: dict) -> str:
         return strip_affect_anchor(strip_wikilinks(str(bucket.get("content", ""))))[:1000]
 

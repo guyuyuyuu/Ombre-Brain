@@ -4667,16 +4667,9 @@ BREATH_LEXICAL_GENERIC_TERMS = {
     "今天", "昨天", "刚才", "刚刚", "这次", "现在", "最近", "记忆", "回忆",
     "原因", "为什么", "知道", "记得", "想起", "想起来", "什么", "事情",
 }
-BREATH_LEXICAL_CONTEXTUAL_GENERIC_TERMS = {
-    "工作",
-}
-BREATH_LEXICAL_CAREER_ANCHOR_TERMS = {
-    "找工作", "求职", "面试", "简历", "投递", "岗位", "招聘", "实习",
-    "入职", "离职", "被裁", "裁员", "offer", "hr",
-}
 
 
-def _breath_lexical_match_terms(query: str) -> list[str]:
+def _breath_lexical_match_terms(query: str, all_buckets: list[dict] | None = None) -> list[str]:
     text = str(query or "").strip()
     if not text:
         return []
@@ -4685,7 +4678,6 @@ def _breath_lexical_match_terms(query: str) -> list[str]:
     for term in BREATH_LEXICAL_EMOTION_TERMS:
         if term in compact:
             terms.append(term)
-    has_specific_career_anchor = any(term in compact for term in BREATH_LEXICAL_CAREER_ANCHOR_TERMS)
     for term in _recall_policy().specific_query_terms(text):
         cleaned = str(term or "").strip()
         if not cleaned:
@@ -4698,8 +4690,6 @@ def _breath_lexical_match_terms(query: str) -> list[str]:
         key = collapsed.lower()
         if len(key) < 2 or key in BREATH_LEXICAL_GENERIC_TERMS:
             continue
-        if has_specific_career_anchor and key in BREATH_LEXICAL_CONTEXTUAL_GENERIC_TERMS:
-            continue
         if re.fullmatch(r"[\u4e00-\u9fff]+", collapsed) and len(collapsed) < 2:
             continue
         terms.append(collapsed)
@@ -4711,6 +4701,13 @@ def _breath_lexical_match_terms(query: str) -> list[str]:
             continue
         seen.add(key)
         output.append(str(term))
+    if all_buckets is not None and hasattr(bucket_mgr, "filter_specific_lexical_terms"):
+        preserve_terms = {term for term in output if term in BREATH_LEXICAL_EMOTION_TERMS}
+        output = bucket_mgr.filter_specific_lexical_terms(
+            output,
+            all_buckets,
+            preserve_terms=preserve_terms,
+        )
     return output[:5]
 
 
@@ -4763,7 +4760,7 @@ def _append_breath_lexical_matches(
     q_valence: float | None = None,
     q_arousal: float | None = None,
 ) -> list[str]:
-    terms = _breath_lexical_match_terms(query)
+    terms = _breath_lexical_match_terms(query, all_buckets=all_buckets)
     if not terms:
         return []
     matched_ids = {str(bucket.get("id") or "") for bucket in matches if bucket.get("id")}
@@ -8864,7 +8861,7 @@ async def api_breath_debug(request):
             "importance": bucket_mgr.w_importance,
         }
         w_sum = sum(w.values())
-        lexical_terms = _breath_lexical_match_terms(query)
+        lexical_terms = _breath_lexical_match_terms(query, all_buckets=all_buckets)
         topic_scores = (
             bucket_mgr.calc_topic_scores(query, all_buckets)
             if query and hasattr(bucket_mgr, "calc_topic_scores")
