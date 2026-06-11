@@ -9,6 +9,7 @@ import time
 import asyncio
 from contextlib import asynccontextmanager
 from copy import deepcopy
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -360,6 +361,19 @@ class GatewayService:
         self.favorite_memory_max_cards = max(0, int(self.gateway_cfg.get("favorite_memory_max_cards", 1)))
         self.related_memory_budget = int(self.gateway_cfg.get("related_memory_budget", 220))
         self.diffusion_options = diffusion_options_from_config(config)
+        self.diffusion_inject_max_items = max(
+            0,
+            min(2, int(self.gateway_cfg.get("diffusion_inject_max_items", 2))),
+        )
+        self.diffusion_inject_min_confidence = self._clamp(
+            float(self.gateway_cfg.get("diffusion_inject_min_confidence", 0.55)),
+            0.0,
+            1.0,
+        )
+        self.diffusion_explore_multiplier = max(
+            1,
+            min(8, int(self.gateway_cfg.get("diffusion_explore_multiplier", 3))),
+        )
         self.core_memory_interval_rounds = max(0, int(self.gateway_cfg.get("core_memory_interval_rounds", 0)))
         self.word_map_hint_enabled = self._bool_config_value(
             self.gateway_cfg.get("word_map_hint_enabled"),
@@ -510,6 +524,9 @@ class GatewayService:
                 "date_recall_max_buckets": self.date_recall_max_buckets,
                 "recalled_memory_budget": self.recalled_budget,
                 "related_memory_budget": self.related_memory_budget,
+                "diffusion_inject_max_items": self.diffusion_inject_max_items,
+                "diffusion_inject_min_confidence": self.diffusion_inject_min_confidence,
+                "diffusion_explore_multiplier": self.diffusion_explore_multiplier,
                 "current_inner_state_interval_rounds": self.current_inner_state_interval_rounds,
                 "direct_render_mode": self.direct_render_mode,
                 "retrieval_mode": self.retrieval_mode,
@@ -565,6 +582,9 @@ class GatewayService:
             "date_recall_max_buckets": self.date_recall_max_buckets,
             "recalled_memory_budget": self.recalled_budget,
             "related_memory_budget": self.related_memory_budget,
+            "diffusion_inject_max_items": self.diffusion_inject_max_items,
+            "diffusion_inject_min_confidence": self.diffusion_inject_min_confidence,
+            "diffusion_explore_multiplier": self.diffusion_explore_multiplier,
             "current_inner_state_interval_rounds": self.current_inner_state_interval_rounds,
             "direct_render_mode": self.direct_render_mode,
             "retrieval_mode": self.retrieval_mode,
@@ -714,6 +734,22 @@ class GatewayService:
             self.related_memory_budget = max(0, int(payload["related_memory_budget"]))
             self.gateway_cfg["related_memory_budget"] = self.related_memory_budget
             updated.append("gateway.related_memory_budget")
+        if "diffusion_inject_max_items" in payload:
+            self.diffusion_inject_max_items = max(0, min(2, int(payload["diffusion_inject_max_items"])))
+            self.gateway_cfg["diffusion_inject_max_items"] = self.diffusion_inject_max_items
+            updated.append("gateway.diffusion_inject_max_items")
+        if "diffusion_inject_min_confidence" in payload:
+            self.diffusion_inject_min_confidence = self._clamp(
+                float(payload["diffusion_inject_min_confidence"]),
+                0.0,
+                1.0,
+            )
+            self.gateway_cfg["diffusion_inject_min_confidence"] = self.diffusion_inject_min_confidence
+            updated.append("gateway.diffusion_inject_min_confidence")
+        if "diffusion_explore_multiplier" in payload:
+            self.diffusion_explore_multiplier = max(1, min(8, int(payload["diffusion_explore_multiplier"])))
+            self.gateway_cfg["diffusion_explore_multiplier"] = self.diffusion_explore_multiplier
+            updated.append("gateway.diffusion_explore_multiplier")
         if "current_inner_state_interval_rounds" in payload:
             self.current_inner_state_interval_rounds = max(
                 0,
@@ -6070,152 +6106,362 @@ class GatewayService:
             return "", []
 
         query_plan = self._recall_query_plan(query_text, context_mode=context_mode)
-        remaining = self.related_memory_budget
-        parts: list[str] = []
-        debug_rows: list[dict[str, Any]] = []
         related_max_chars = query_plan.related_max_chars
         allow_caution_paths = query_plan.allow_caution_diffusion
         allow_archive_targets = query_plan.allow_archive_targets
-        used_bucket_ids = {
+        seed_bucket_ids = {
             str(moment.get("bucket_id") or "")
             for moment in seed_moments
             if moment.get("bucket_id")
         }
         moment_map = self._moment_diffusion_map(moments)
+        explore_limit = self._diffusion_explore_limit(query_plan)
+        candidates_by_bucket: dict[str, dict[str, Any]] = {}
+
+        def add_candidate(row: dict[str, Any]) -> None:
+            moment = row.get("moment")
+            if not isinstance(moment, dict):
+                return
+            bucket_id = str(moment.get("bucket_id") or "")
+            moment_id = str(moment.get("moment_id") or "")
+            if not bucket_id or not moment_id or bucket_id in seed_bucket_ids:
+                return
+            if self._moment_is_caution_or_old(moment) and not allow_caution_paths:
+                return
+            row["bucket_id"] = bucket_id
+            row["moment_id"] = moment_id
+            row["has_topic_evidence"] = self._moment_has_query_topic_evidence(query_text, moment)
+            row["runtime_allowed"] = can_moment_be_related_target(
+                moment,
+                explicit_lookup=allow_archive_targets,
+            )
+            allowed, reason = self._diffusion_candidate_injection_decision(row, query_plan)
+            row["injectable"] = allowed
+            row["suppression_reason"] = "" if allowed else reason
+            row["injected"] = False
+            row["rank_key"] = self._diffusion_candidate_rank_key(row)
+            existing = candidates_by_bucket.get(bucket_id)
+            if existing is None or row["rank_key"] > existing.get("rank_key", ()):
+                candidates_by_bucket[bucket_id] = row
 
         for moment in self._secondary_direct_moments(
             query_text,
             moment_candidates,
-            used_bucket_ids,
+            seed_bucket_ids,
             query_plan=query_plan,
+            limit=explore_limit,
         ):
-            if self._moment_is_caution_or_old(moment) and not allow_caution_paths:
-                continue
-            block = self._format_diffused_moment_line(
-                moment,
-                max_chars=related_max_chars,
-                note="related_query_hit",
-                moment_map=moment_map,
+            semantic_confidence = self._moment_candidate_confidence(moment, default=0.72)
+            if getattr(query_plan, "wants_body_chain", False):
+                semantic_confidence = max(semantic_confidence, 0.72)
+            add_candidate(
+                {
+                    "moment": moment,
+                    "why": "semantic_neighbor",
+                    "confidence": semantic_confidence,
+                    "note": "related_query_hit",
+                    "source": "secondary_direct",
+                    "path": None,
+                    "path_len": 0,
+                    "activation": self._safe_float(moment.get("score"), 0.0),
+                    "chain_bundle": False,
+                }
             )
-            tokens = count_tokens_approx(block)
-            if tokens > remaining and parts:
-                break
-            if tokens > remaining:
-                block = self._trim_text(block, remaining)
-                tokens = count_tokens_approx(block)
-            if tokens <= 0:
-                continue
-            parts.append(block)
-            debug_rows.append(
-                self._format_diffused_moment_debug(
-                    moment,
-                    note="related_query_hit",
-                    explicit_lookup=allow_archive_targets,
-                    query=query_text,
-                    moment_map=moment_map,
-                )
-            )
-            remaining -= tokens
-            used_bucket_ids.add(str(moment.get("bucket_id") or ""))
-            if remaining <= 0:
-                break
 
-        if remaining <= 0 or not self.diffusion_options.enabled or self.diffusion_options.top_k <= 0:
-            return "\n".join(parts), debug_rows
-
-        filtered_edges = [
-            edge for edge in edges
-            if float(edge.get("confidence", 0.0)) >= self.edge_min_confidence
-        ]
-        source_record_seed_terms = self._source_record_seed_terms_by_id(diffusion_seed_moments)
-        if source_record_seed_terms:
-            filtered_edges.extend(
-                self._source_record_fragment_seed_edges(
-                    diffusion_seed_moments,
-                    moments,
-                    query_text,
+        if self.diffusion_options.enabled and self.diffusion_options.top_k > 0:
+            filtered_edges = [
+                edge for edge in edges
+                if float(edge.get("confidence", 0.0)) >= self.edge_min_confidence
+            ]
+            source_record_seed_terms = self._source_record_seed_terms_by_id(diffusion_seed_moments)
+            if source_record_seed_terms:
+                filtered_edges.extend(
+                    self._source_record_fragment_seed_edges(
+                        diffusion_seed_moments,
+                        moments,
+                        query_text,
+                    )
                 )
+            representatives = self._representative_moments_by_bucket(
+                moments,
+                explicit_lookup=allow_archive_targets,
             )
-        representatives = self._representative_moments_by_bucket(
-            moments,
-            explicit_lookup=allow_archive_targets,
-        )
-        hits = diffuse_memory(
-            self._seed_scores_for_moments(diffusion_seed_moments),
-            filtered_edges,
-            moment_map,
-            options=self.diffusion_options,
-            exclude_ids={moment["moment_id"] for moment in diffusion_seed_moments if moment.get("moment_id")},
-            query_text=query_text,
-        )
-        seen_moment_ids: set[str] = set()
-        for hit in hits:
-            moment = moment_map.get(hit.bucket_id)
-            if not moment or hit.bucket_id in seen_moment_ids:
-                continue
-            bucket_id = str(moment.get("bucket_id") or "")
-            if bucket_id in used_bucket_ids:
-                continue
-            if not can_moment_be_related_target(moment, explicit_lookup=allow_archive_targets):
-                replacement = representatives.get(bucket_id)
-                if not replacement:
+            hits = diffuse_memory(
+                self._seed_scores_for_moments(diffusion_seed_moments),
+                filtered_edges,
+                moment_map,
+                options=self._diffusion_explore_options(explore_limit),
+                exclude_ids={moment["moment_id"] for moment in diffusion_seed_moments if moment.get("moment_id")},
+                query_text=query_text,
+            )
+            seen_moment_ids: set[str] = set()
+            for hit in hits:
+                moment = moment_map.get(hit.bucket_id)
+                if not moment or hit.bucket_id in seen_moment_ids:
                     continue
-                moment = replacement
-                if moment.get("moment_id") in seen_moment_ids:
+                bucket_id = str(moment.get("bucket_id") or "")
+                if bucket_id in seed_bucket_ids:
                     continue
                 if not can_moment_be_related_target(moment, explicit_lookup=allow_archive_targets):
+                    replacement = representatives.get(bucket_id)
+                    if not replacement:
+                        continue
+                    moment = replacement
+                    if moment.get("moment_id") in seen_moment_ids:
+                        continue
+                    if not can_moment_be_related_target(moment, explicit_lookup=allow_archive_targets):
+                        continue
+                path = self._select_diffusion_path_for_context(hit.paths, moment_map, allow_caution_paths)
+                if path is None:
                     continue
-            path = self._select_diffusion_path_for_context(hit.paths, moment_map, allow_caution_paths)
-            if path is None:
-                continue
-            source_record_terms = self._source_record_path_topic_terms(path, source_record_seed_terms)
-            if source_record_terms:
-                if not self._moment_matches_source_record_topic_terms(moment, source_record_terms):
+                source_record_terms = self._source_record_path_topic_terms(path, source_record_seed_terms)
+                if source_record_terms and not self._moment_matches_source_record_topic_terms(
+                    moment,
+                    source_record_terms,
+                ):
                     continue
-            elif (
-                query_plan.enforce_topic_evidence
-                and not self._moment_has_query_topic_evidence(query_text, moment)
-            ):
+                add_candidate(
+                    {
+                        "moment": moment,
+                        "why": self._diffusion_path_why(path, moment, moment_map),
+                        "confidence": self._diffusion_path_confidence(path, default=hit.activation),
+                        "note": self._diffused_path_note(path, moment_map),
+                        "source": "graph",
+                        "path": path,
+                        "path_len": len(getattr(path, "steps", ()) or ()),
+                        "activation": self._safe_float(hit.activation, 0.0),
+                        "chain_bundle": (
+                            self.diffusion_options.chain_walk_enabled
+                            and path is not None
+                            and len(getattr(path, "steps", ()) or ()) >= 2
+                        ),
+                    }
+                )
+                seen_moment_ids.add(str(moment.get("moment_id") or hit.bucket_id))
+
+        candidates = sorted(
+            candidates_by_bucket.values(),
+            key=lambda row: row.get("rank_key", ()),
+            reverse=True,
+        )
+        inject_limit = self._diffusion_inject_limit(query_plan)
+        selected = [row for row in candidates if row.get("injectable")][:inject_limit]
+        selected_ids = {id(row) for row in selected}
+        for row in candidates:
+            if row.get("injectable") and id(row) not in selected_ids:
+                row["suppression_reason"] = "inject_limit"
+
+        remaining = self.related_memory_budget
+        parts: list[str] = []
+        for row in selected:
+            if remaining <= 0:
+                row["suppression_reason"] = "budget_exhausted"
                 continue
-            note = self._diffused_path_note(path, moment_map)
+            moment = row["moment"]
             block = self._format_diffused_moment_line(
                 moment,
                 max_chars=related_max_chars,
-                note=note,
-                path=path,
+                note=self._diffused_display_note(row),
+                path=row.get("path"),
                 moment_map=moment_map,
-                chain_bundle=self.diffusion_options.chain_walk_enabled,
+                chain_bundle=bool(row.get("chain_bundle")),
             )
             tokens = count_tokens_approx(block)
             if tokens > remaining and parts:
+                row["suppression_reason"] = "budget_exhausted"
                 break
             if tokens > remaining:
                 block = self._trim_text(block, remaining)
                 tokens = count_tokens_approx(block)
             if tokens <= 0:
+                row["suppression_reason"] = "budget_exhausted"
                 continue
             parts.append(block)
-            debug_rows.append(
-                self._format_diffused_moment_debug(
-                    moment,
-                    note=note,
-                    path=path,
-                    moment_map=moment_map,
-                    explicit_lookup=allow_archive_targets,
-                    query=query_text,
-                    chain_bundle=(
-                        self.diffusion_options.chain_walk_enabled
-                        and path is not None
-                        and len(getattr(path, "steps", ()) or ()) >= 2
-                    ),
-                )
-            )
+            row["injected"] = True
+            row["suppression_reason"] = ""
             remaining -= tokens
-            used_bucket_ids.add(bucket_id)
-            seen_moment_ids.add(str(moment.get("moment_id") or hit.bucket_id))
-            if remaining <= 0:
-                break
+
+        debug_rows = [
+            self._format_diffused_candidate_debug(
+                row,
+                moment_map=moment_map,
+                explicit_lookup=allow_archive_targets,
+                query=query_text,
+            )
+            for row in candidates[:20]
+        ]
         return "\n".join(parts), debug_rows
+
+    def _diffusion_explore_limit(self, query_plan: Any) -> int:
+        base = max(1, int(getattr(self.diffusion_options, "top_k", 0) or 0))
+        return max(
+            base,
+            self._diffusion_inject_limit(query_plan),
+            min(24, base * self.diffusion_explore_multiplier),
+        )
+
+    def _diffusion_inject_limit(self, query_plan: Any) -> int:
+        if self.inject_max_cards <= 0:
+            return 0
+        if getattr(query_plan, "wants_body_chain", False):
+            return max(0, min(5, self.inject_max_cards * 3))
+        return max(0, min(2, self.inject_max_cards, self.diffusion_inject_max_items))
+
+    def _diffusion_explore_options(self, explore_limit: int):
+        return replace(
+            self.diffusion_options,
+            top_k=max(int(getattr(self.diffusion_options, "top_k", 0) or 0), explore_limit),
+        )
+
+    def _diffusion_candidate_injection_decision(
+        self,
+        row: dict[str, Any],
+        query_plan: Any,
+    ) -> tuple[bool, str]:
+        moment = row.get("moment")
+        if not isinstance(moment, dict):
+            return False, "invalid_candidate"
+        if not row.get("runtime_allowed"):
+            return False, "layer_gate_denied"
+        confidence = self._safe_float(row.get("confidence"), 0.0)
+        if confidence < self.diffusion_inject_min_confidence:
+            return False, "low_confidence"
+        why = str(row.get("why") or "")
+        if why in {"same_topic", "date_neighbor"}:
+            return True, ""
+        if row.get("has_topic_evidence"):
+            return True, ""
+        if why == "semantic_neighbor":
+            if confidence >= self.high_confidence_semantic_score:
+                return True, ""
+            return False, "query_topic_evidence_missing"
+        if why == "explicit_edge":
+            path_len = int(row.get("path_len") or 0)
+            strong_edge_floor = max(self.diffusion_inject_min_confidence + 0.2, 0.80)
+            if path_len <= 1 and confidence >= strong_edge_floor:
+                return True, ""
+            return False, "query_topic_evidence_missing"
+        return False, "unknown_diffusion_reason"
+
+    def _diffusion_candidate_rank_key(self, row: dict[str, Any]) -> tuple:
+        why_priority = {
+            "same_topic": 5,
+            "date_neighbor": 4,
+            "semantic_neighbor": 3,
+            "explicit_edge": 2,
+        }.get(str(row.get("why") or ""), 1)
+        path_len = int(row.get("path_len") or 0)
+        return (
+            1 if row.get("injectable") else 0,
+            why_priority,
+            1 if row.get("has_topic_evidence") else 0,
+            self._safe_float(row.get("confidence"), 0.0),
+            self._safe_float(row.get("activation"), 0.0),
+            -path_len,
+        )
+
+    def _format_diffused_candidate_debug(
+        self,
+        row: dict[str, Any],
+        *,
+        moment_map: dict[str, dict],
+        explicit_lookup: bool,
+        query: str,
+    ) -> dict[str, Any]:
+        payload = self._format_diffused_moment_debug(
+            row["moment"],
+            note=str(row.get("note") or ""),
+            path=row.get("path"),
+            moment_map=moment_map,
+            explicit_lookup=explicit_lookup,
+            query=query,
+            chain_bundle=bool(row.get("chain_bundle")),
+        )
+        payload.update(
+            {
+                "why": str(row.get("why") or ""),
+                "confidence": self._safe_float(row.get("confidence"), 0.0),
+                "activation": self._safe_float(row.get("activation"), 0.0),
+                "source": str(row.get("source") or ""),
+                "injected": bool(row.get("injected")),
+                "suppression_reason": str(row.get("suppression_reason") or ""),
+                "has_topic_evidence": bool(row.get("has_topic_evidence")),
+            }
+        )
+        return payload
+
+    def _diffusion_path_why(self, path: Any, target: dict, moment_map: dict[str, dict]) -> str:
+        steps = tuple(getattr(path, "steps", ()) or ())
+        for step in steps:
+            relation = str(getattr(step, "relation_type", "") or "").lower()
+            reason = str(getattr(step, "reason", "") or "").lower()
+            if (
+                relation == "same_topic"
+                or "same_topic" in reason
+                or "source_record_fragment_topic_evidence" in reason
+                or ("topic" in reason and "off-topic" not in reason)
+            ):
+                return "same_topic"
+            if relation in {"date_neighbor", "same_date", "same_day"} or any(
+                marker in reason
+                for marker in ("date_neighbor", "same_date", "same day", "same-day", "same_day")
+            ):
+                return "date_neighbor"
+        return "explicit_edge" if steps else "semantic_neighbor"
+
+    def _diffusion_path_confidence(self, path: Any, *, default: float = 0.65) -> float:
+        steps = tuple(getattr(path, "steps", ()) or ())
+        if not steps:
+            return self._clamp(float(default or 0.65), 0.0, 1.0)
+        values = [
+            self._safe_float(getattr(step, "confidence", 0.0), 0.0)
+            for step in steps
+        ]
+        values = [value for value in values if value > 0]
+        if not values:
+            return self._clamp(float(default or 0.65), 0.0, 1.0)
+        return self._clamp(min(values), 0.0, 1.0)
+
+    def _moment_candidate_confidence(self, moment: dict, *, default: float = 0.72) -> float:
+        for key in ("score", "rerank_score", "semantic_score"):
+            value = moment.get(key)
+            if value is None:
+                continue
+            confidence = self._safe_float(value, -1.0)
+            if confidence > 0:
+                return self._clamp(confidence, 0.0, 1.0)
+        return self._clamp(default, 0.0, 1.0)
+
+    def _diffusion_path_has_date_neighbor(
+        self,
+        path: Any,
+        target: dict,
+        moment_map: dict[str, dict],
+    ) -> bool:
+        target_date = self._moment_created_date_key(target)
+        if not target_date:
+            return False
+        for node_id in tuple(str(node) for node in (getattr(path, "nodes", ()) or ()))[:-1]:
+            if self._moment_created_date_key(moment_map.get(node_id)) == target_date:
+                return True
+        return False
+
+    def _moment_created_date_key(self, moment: dict | None) -> str:
+        if not isinstance(moment, dict):
+            return ""
+        meta = moment.get("metadata", {}) if isinstance(moment.get("metadata"), dict) else {}
+        return self._date_yyyy_mm_dd(
+            meta.get("created")
+            or meta.get("bucket_created")
+            or moment.get("created_at")
+        )
+
+    def _diffused_display_note(self, row: dict[str, Any]) -> str:
+        why = str(row.get("why") or "explicit_edge")
+        confidence = self._safe_float(row.get("confidence"), 0.0)
+        note = str(row.get("note") or "").strip()
+        prefix = f"why:{why} confidence:{confidence:.2f}"
+        return f"{prefix}; {note}" if note else prefix
 
     def _source_record_seed_terms_by_id(self, seed_moments: list[dict]) -> dict[str, list[str]]:
         terms_by_id: dict[str, list[str]] = {}
@@ -6314,6 +6560,7 @@ class GatewayService:
         used_bucket_ids: set[str],
         *,
         query_plan=None,
+        limit: int | None = None,
     ) -> list[dict]:
         query_plan = query_plan or self._recall_query_plan(query)
         hidden = []
@@ -6335,8 +6582,9 @@ class GatewayService:
             seen.add(bucket_id)
         if query_plan.wants_body_chain:
             hidden.sort(key=lambda moment: self._recall_rank(query, moment))
-            return hidden[:5]
-        return hidden[: max(0, min(2, self.inject_max_cards))]
+            return hidden[: max(0, limit if limit is not None else 5)]
+        default_limit = max(0, min(2, self.inject_max_cards))
+        return hidden[: max(0, limit if limit is not None else default_limit)]
 
     def _query_requires_topic_evidence(self, query: str) -> bool:
         return self._recall_query_plan(query).requires_topic_evidence
@@ -8411,7 +8659,7 @@ class GatewayService:
                 + [
                     str(row.get("bucket_id") or "")
                     for row in diffused_debug_rows
-                    if isinstance(row, dict) and row.get("bucket_id")
+                    if isinstance(row, dict) and row.get("injected") and row.get("bucket_id")
                 ]
             )
         )
@@ -8421,8 +8669,22 @@ class GatewayService:
                 + [
                     str(row.get("moment_id") or "")
                     for row in diffused_debug_rows
-                    if isinstance(row, dict) and row.get("moment_id")
+                    if isinstance(row, dict) and row.get("injected") and row.get("moment_id")
                 ]
+            )
+        )
+        diffused_candidate_bucket_ids = list(
+            dict.fromkeys(
+                str(row.get("bucket_id") or "")
+                for row in diffused_debug_rows
+                if isinstance(row, dict) and row.get("bucket_id")
+            )
+        )
+        diffused_candidate_moment_ids = list(
+            dict.fromkeys(
+                str(row.get("moment_id") or "")
+                for row in diffused_debug_rows
+                if isinstance(row, dict) and row.get("moment_id")
             )
         )
         targeted_bucket_ids = [
@@ -8470,6 +8732,7 @@ class GatewayService:
             "injected_bucket_ids": injected_bucket_ids,
             "recalled_bucket_ids": recalled_bucket_ids,
             "diffused_bucket_ids": diffused_bucket_ids,
+            "diffused_candidate_bucket_ids": diffused_candidate_bucket_ids,
             "recalled_moment_ids": recalled_moment_ids,
             "recalled_moment_debug": [
                 self._format_moment_debug(
@@ -8486,6 +8749,7 @@ class GatewayService:
                 for moment in recalled_moments[:20]
             ],
             "diffused_moment_ids": diffused_moment_ids,
+            "diffused_candidate_moment_ids": diffused_candidate_moment_ids,
             "diffused_moment_debug": diffused_debug_rows[:20],
             "suppressed_bucket_candidates": [
                 self._format_suppressed_bucket_debug(
