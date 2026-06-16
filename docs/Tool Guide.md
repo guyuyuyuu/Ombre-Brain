@@ -26,7 +26,7 @@
 
 写入：
 - 想保存/记住/别忘：单条长期事实用 hold；长片段多条信息用 grow。
-- 知道事件日期时，写入时传 date，例如 hold(content="...", date="2026-06-15")；显式 valence/arousal 会作为这条记忆或 whisper/feel 的情绪值，不会被自动打标覆盖。
+- 知道事件日期时，写入时传 date，例如 hold(content="...", date="2026-06-15")；知道固定领域时传 domain，例如 hold(content="...", domain="relationship")；显式 domain/valence/arousal 会作为这条记忆或 whisper/feel 的元数据，不会被自动打标覆盖。
 - 已有旧记忆的新感受/补充：先 read_bucket，再 comment_bucket。
 - 修改/归档/删除/沉底旧记忆：先 read_bucket，再 trace。只改事件日期用 trace(bucket_id="...", date="2026-06-15")；日期/元数据更新不会重建 embedding，正文或标题变更才会。
 - 稳定画像事实：先有证据 bucket，再 profile_fact(fact, evidence_bucket_id, ...)。

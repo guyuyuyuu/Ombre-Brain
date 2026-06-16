@@ -775,7 +775,7 @@ rm /srv/ombre-brain/state/.dashboard_auth.json
 | `breath` | 只读浮现或检索记忆；新窗口用 `mode="handoff"` 或 `is_session_start=true`；具体事件用 `query` 查，明确日期可传 `date` 或在 query 里写日期；`domain="daily_impression"` 才读日印象。 |
 | `read_bucket` | 按 bucket_id 精确读取完整记忆；准备改旧记忆或追细节前使用。 |
 | `comment_bucket` | 给已有记忆追加年轮/评论；适合“读到旧记忆后的新感受或补充”。 |
-| `hold` | 写单条长期记忆；可传 `date` 记录事件日期；显式 `valence/arousal` 会覆盖自动情绪；`whisper=True` 写无源悄悄话。 |
+| `hold` | 写单条长期记忆；可传 `date` 记录事件日期；显式 `domain` 会覆盖自动领域；显式 `valence/arousal` 会覆盖自动情绪；`whisper=True` 写无源悄悄话。 |
 | `darkroom_enter` | 写入私密暗房，只返回门口状态，不回显正文。 |
 | `grow` | 长内容摘记；只喂已经筛过的长期记忆点，不要整篇流水账原样写入。 |
 | `profile_fact` | 手动固化带证据的用户画像事实；需要 evidence bucket/moment。 |

@@ -16,7 +16,7 @@
 | `breath` | **每次对话最开头**调用一次（`is_session_start=True`）——先恢复自我入口、用户画像、关系画像、近期连续性和少量必要锚点。有明确话题时传 `query` 关键词检索；有明确日期时可传 `date` 或在 query 里写日期。传 `domain="feel"` 读取旧独立 feel；传 `domain="whisper"` 读取悄悄话；传 `domain="daily_impression"` 才读取日印象；传 `domain="self_anchor"` 读取你自己留下的锚点。`max_tokens` 控制返回总 token 上限（默认 10000），`max_results` 控制最大返回条数（默认 20） |
 | `read_bucket` | 按 bucket_id 精确读取完整记忆；准备追细节、写年轮、修改或删除前先读 |
 | `comment_bucket` | 给已有记忆追加年轮/评论；读到旧记忆后的新感受或补充，用它挂回源 bucket |
-| `hold` | 写单条长期记忆；`date` 可传事件日期；显式 `valence/arousal` 会覆盖自动情绪；`whisper=True` 写无源碎碎念。旧记忆的新感受优先用 `comment_bucket` |
+| `hold` | 写单条长期记忆；`date` 可传事件日期；显式 `domain` 会覆盖自动领域；显式 `valence/arousal` 会覆盖自动情绪；`whisper=True` 写无源碎碎念。旧记忆的新感受优先用 `comment_bucket` |
 | `darkroom_enter` | 写入未想透、不该给用户看、不该进普通记忆的内在反思；只返回门口状态，不回显正文 |
 | `grow` | 当**一天结束时**或**用户发来一大段日记/总结**时调用。只把筛过的长期记忆点交给它，别把整段流水账原样塞进去 |
 | `profile_fact` | 手动固化稳定画像事实；必须先有 evidence bucket/moment |
@@ -73,6 +73,7 @@
 ### hold vs grow
 - 一句话的事 → `hold`（"我喜欢吃饺子"）
 - 知道事件日期 → `hold(content="...", date="2026-06-15")`；日期也可以是 `2026.06.15` 或 `2026年6月15日`
+- 知道固定领域 → `hold(content="...", domain="relationship")`；多个领域用逗号分隔，显式传入会覆盖自动打标
 - 需要手动情绪值 → 传 `valence` / `arousal`；显式传入会覆盖自动打标，不会被浪费
 - 旧记忆的新感受或补充 → `comment_bucket`，不要再新建一条独立 feel
 - 没有源头、只是突然冒出的碎碎念 → `hold(whisper=True)`

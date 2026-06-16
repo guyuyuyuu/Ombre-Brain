@@ -7048,8 +7048,9 @@ async def hold(
     arousal: float = -1,
     title: str = "",
     date: str = "",
+    domain: str = "",
 ) -> str:
-    """写一条长期记忆。单个事实/承诺/偏好用 hold；旧记忆的新感受用 comment_bucket；悄悄话用 whisper=True。date 可传事件日期；显式 valence/arousal 会覆盖自动情绪。title 可选，传了就用你给的标题，不传则自动生成。content 按需分段：正文 + ### moment + ### original + ### reflection + ### followup + ### affect_anchor（只放和弦温度线），没有的部分不写。"""
+    """写一条长期记忆。单个事实/承诺/偏好用 hold；旧记忆的新感受用 comment_bucket；悄悄话用 whisper=True。date 可传事件日期；显式 domain 会覆盖自动领域；显式 valence/arousal 会覆盖自动情绪。title 可选，传了就用你给的标题，不传则自动生成。content 按需分段：正文 + ### moment + ### original + ### reflection + ### followup + ### affect_anchor（只放和弦温度线），没有的部分不写。"""
     await decay_engine.ensure_started()
 
     # --- Input validation / 输入校验 ---
@@ -7058,6 +7059,7 @@ async def hold(
 
     importance = max(1, min(10, importance))
     extra_tags = [t.strip() for t in tags.split(",") if t.strip()]
+    requested_domain = [d.strip() for d in str(domain or "").split(",") if d.strip()]
     event_date = str(date or "").strip()
     requested_valence = valence if 0 <= valence <= 1 else None
     requested_arousal = arousal if 0 <= arousal <= 1 else None
@@ -7070,7 +7072,7 @@ async def hold(
             content=content,
             tags=whisper_tags,
             importance=5,
-            domain=[],
+            domain=requested_domain,
             valence=whisper_valence,
             arousal=whisper_arousal,
             name=None,
@@ -7129,7 +7131,7 @@ async def hold(
             "tags": [], "suggested_name": "",
         }
 
-    domain = analysis["domain"]
+    domain = requested_domain or analysis["domain"]
     valence = requested_valence if requested_valence is not None else analysis["valence"]
     arousal = requested_arousal if requested_arousal is not None else analysis["arousal"]
     auto_tags = analysis["tags"]
