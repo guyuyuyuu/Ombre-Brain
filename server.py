@@ -1375,7 +1375,7 @@ def _format_handoff_darkroom_door() -> str:
     last_completeness = status.get("last_completeness")
     lines = [
         str(status.get("door") or "暗房存在。门口只显示状态，不显示未显影正文。"),
-        "Use darkroom_enter(note=...) for unfinished private reflection; use darkroom_release only when intentionally bringing a note out.",
+        "Use darkroom_enter(note=..., lock_for=\"6h\") for unfinished private reflection; use darkroom_view only after the entry unlocks.",
     ]
     if count:
         detail = f"entries={count}"
@@ -7209,6 +7209,7 @@ async def darkroom_enter(
     tags: str = "",
     source: str = "mcp",
     visibility: str = "active",
+    lock_for: str = "",
 ) -> dict:
     """写入一段未显影的私密反思；返回门口状态，不回显 note 正文。"""
     try:
@@ -7220,9 +7221,19 @@ async def darkroom_enter(
             source=source,
             mode=mode,
             visibility=visibility,
+            lock_for=lock_for,
         )
     except ValueError as exc:
         return {"status": "error", "error": str(exc)}
+
+
+@mcp.tool()
+async def darkroom_view(entry_id: str = "latest") -> dict:
+    """只读查看一条已解锁的暗房内容；未到锁门时间只返回 unlock_at，不返回正文。"""
+    try:
+        return darkroom_store.view(entry_id=entry_id)
+    except KeyError:
+        return {"status": "error", "error": "entry not found"}
 
 
 async def darkroom_status() -> dict:

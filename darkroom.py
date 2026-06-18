@@ -1,7 +1,8 @@
 import json
 import os
+import re
 import secrets
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from threading import Lock
 from zoneinfo import ZoneInfo
@@ -10,10 +11,31 @@ from identity import identity_names
 
 
 LOCAL_TZ = ZoneInfo("Asia/Shanghai")
+LOCK_FOR_RE = re.compile(r"^\s*(\d+)\s*(h|hr|hour|hours|小时|d|day|days|天)\s*$", re.IGNORECASE)
+
+
+def _now() -> datetime:
+    return datetime.now(LOCAL_TZ)
 
 
 def _now_iso() -> str:
-    return datetime.now(LOCAL_TZ).isoformat(timespec="seconds")
+    return _now().isoformat(timespec="seconds")
+
+
+def _parse_lock_for(value: str | None) -> timedelta | None:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    match = LOCK_FOR_RE.match(raw)
+    if not match:
+        raise ValueError("invalid lock_for")
+    amount = int(match.group(1))
+    if amount <= 0:
+        return None
+    unit = match.group(2).lower()
+    if unit in {"h", "hr", "hour", "hours", "小时"}:
+        return timedelta(hours=amount)
+    return timedelta(days=amount)
 
 
 def _clamp_completeness(value: float | int | str | None) -> float | None:
@@ -85,6 +107,7 @@ class DarkroomStore:
         source: str = "mcp",
         mode: str = "continue",
         visibility: str = "active",
+        lock_for: str = "",
     ) -> dict:
         text = str(note or "").strip()
         if not text:
@@ -93,6 +116,8 @@ class DarkroomStore:
             raise ValueError("note is too long")
         mode_key = _normalize_mode(mode)
         visibility_key = _normalize_visibility(visibility)
+        lock_delta = _parse_lock_for(lock_for)
+        now = _now()
 
         with self._lock:
             self.base_dir.mkdir(parents=True, exist_ok=True)
@@ -102,7 +127,7 @@ class DarkroomStore:
             continuation_anchor = self._continuation_anchor_unlocked(mode_key)
             entry = {
                 "id": self._new_entry_id(),
-                "created_at": _now_iso(),
+                "created_at": now.isoformat(timespec="seconds"),
                 "note": text,
                 "mode": mode_key,
                 "completeness": _clamp_completeness(completeness),
@@ -113,6 +138,8 @@ class DarkroomStore:
                 "tags": _split_tags(tags),
                 "source": str(source or "mcp").strip()[:80],
                 "visibility": visibility_key,
+                "lock_for": str(lock_for or "").strip()[:40],
+                "locked_until": (now + lock_delta).isoformat(timespec="seconds") if lock_delta else "",
             }
             self._append_jsonl_unlocked(self.entries_path, entry)
             state = self._active_state_unlocked(base_state=state)
@@ -130,6 +157,9 @@ class DarkroomStore:
             entry = self._find_entry_unlocked(entry_id)
             if not entry:
                 raise KeyError("entry not found")
+            locked = self._locked_payload_unlocked(entry)
+            if locked:
+                return locked
             release = {
                 "id": f"rel_{secrets.token_hex(6)}",
                 "entry_id": entry["id"],
@@ -152,8 +182,28 @@ class DarkroomStore:
                 "content": entry.get("note", ""),
             }
 
+    def view(self, entry_id: str = "latest") -> dict:
+        with self._lock:
+            entry = self._find_entry_unlocked(entry_id)
+            if not entry:
+                raise KeyError("entry not found")
+            locked = self._locked_payload_unlocked(entry)
+            if locked:
+                return locked
+            return {
+                "status": "visible",
+                "entry_id": entry["id"],
+                "created_at": entry.get("created_at", ""),
+                "completeness": entry.get("completeness"),
+                "mood": entry.get("mood", ""),
+                "tags": entry.get("tags", []),
+                "visibility": entry.get("visibility", "active"),
+                "locked_until": str(entry.get("locked_until") or ""),
+                "content": entry.get("note", ""),
+            }
+
     def _new_entry_id(self) -> str:
-        return f"dr_{datetime.now(LOCAL_TZ).strftime('%Y%m%d%H%M%S')}_{secrets.token_hex(4)}"
+        return f"dr_{_now().strftime('%Y%m%d%H%M%S')}_{secrets.token_hex(4)}"
 
     def _ai_name(self) -> str:
         return identity_names(self.config).get("ai_name") or "AI"
@@ -178,7 +228,28 @@ class DarkroomStore:
             },
             "mood": entry.get("mood", ""),
             "tags": entry.get("tags", []),
+            "locked_until": str(entry.get("locked_until") or ""),
             "visible_note": f"{ai_name} 进入了暗房。",
+        }
+
+    def _locked_payload_unlocked(self, entry: dict) -> dict | None:
+        raw = str(entry.get("locked_until") or "").strip()
+        if not raw:
+            return None
+        try:
+            unlock_at = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        if unlock_at.tzinfo is None:
+            unlock_at = unlock_at.replace(tzinfo=LOCAL_TZ)
+        unlock_at = unlock_at.astimezone(LOCAL_TZ)
+        if _now() >= unlock_at:
+            return None
+        return {
+            "status": "locked",
+            "entry_id": entry.get("id", ""),
+            "created_at": entry.get("created_at", ""),
+            "unlock_at": unlock_at.isoformat(timespec="seconds"),
         }
 
     def _status_unlocked(self) -> dict:

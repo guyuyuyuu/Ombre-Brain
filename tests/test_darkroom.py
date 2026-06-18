@@ -16,13 +16,14 @@ def test_darkroom_enter_does_not_echo_note(tmp_path):
     store = _store(tmp_path)
     secret = "这是一句还没显影的暗房正文"
 
-    result = store.enter(secret, completeness=0.4, mood="quiet", tags="暗房,未完成")
+    result = store.enter(secret, completeness=0.4, mood="quiet", tags="暗房,未完成", lock_for="6小时")
 
     assert result["status"] == "entered"
-    assert result["visible_note"] == "Haven 进入了暗房。"
+    assert result["visible_note"] == "AI 进入了暗房。"
     assert secret not in str(result)
     assert result["completeness"] == {"previous": None, "current": 0.4}
     assert result["tags"] == ["暗房", "未完成"]
+    assert result["locked_until"]
 
 
 def test_darkroom_door_uses_configured_ai_name(tmp_path):
@@ -94,6 +95,62 @@ def test_darkroom_release_explicitly_returns_content(tmp_path):
     assert released["content"] == secret
     assert released["tags"] == ["ready"]
     assert store.status()["released_count"] == 1
+
+
+def test_darkroom_view_returns_content_without_release_count(tmp_path):
+    store = _store(tmp_path)
+    secret = "这句可以只读查看"
+    store.enter(secret, completeness=1.0, tags="ready")
+
+    viewed = store.view("latest")
+
+    assert viewed["status"] == "visible"
+    assert viewed["content"] == secret
+    assert viewed["tags"] == ["ready"]
+    assert store.status()["released_count"] == 0
+
+
+def test_darkroom_view_respects_lock_for(tmp_path):
+    store = _store(tmp_path)
+    secret = "锁门期间不能出现在 view 里"
+    store.enter(secret, completeness=0.5, lock_for="1d")
+
+    viewed = store.view("latest")
+    released = store.release("latest", reason="too early")
+
+    assert viewed["status"] == "locked"
+    assert "unlock_at" in viewed
+    assert "content" not in viewed
+    assert secret not in str(viewed)
+    assert released["status"] == "locked"
+    assert secret not in str(released)
+    assert store.status()["released_count"] == 0
+
+
+def test_darkroom_view_allows_expired_lock(tmp_path):
+    store = _store(tmp_path)
+    secret = "过期以后可以查看"
+    legacy = {
+        "id": "dr_expired_lock",
+        "created_at": "2000-01-01T00:00:00+08:00",
+        "note": secret,
+        "mode": "continue",
+        "completeness": 1.0,
+        "previous_entry_id": "",
+        "previous_completeness": None,
+        "continuation_anchor": {},
+        "mood": "old",
+        "tags": ["ready"],
+        "source": "test",
+        "visibility": "active",
+        "locked_until": "2000-01-02T00:00:00+08:00",
+    }
+    store._append_jsonl_unlocked(store.entries_path, legacy)
+
+    viewed = store.view("latest")
+
+    assert viewed["status"] == "visible"
+    assert viewed["content"] == secret
 
 
 def test_darkroom_status_defaults_to_active_entries(tmp_path):
