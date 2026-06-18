@@ -35,8 +35,8 @@
 - content 分段格式：### moment（事件事实）/ ### original（原话证据）/ ### reflection（你的理解和回应规则）/ ### followup（后续待办）/ ### affect_anchor（只放和弦温度线，不放事实）。旧 ### assistant_reflection 兼容，但新写入用 ### reflection。没有的部分不写。
 
 暗房：
-- 未想透、不该给用户看、不该进普通记忆的内在反思：darkroom_enter(note=..., visibility="active")，visibility 可用 active / archived / retracted。
-- 外部平台只暴露 darkroom_enter。没有可读暗房正文的工具，也没有显影/释放工具。
+- 未想透、不该给用户看、不该进普通记忆的内在反思：darkroom_enter(note=..., visibility="active", lock_for="6h")，visibility 可用 active / archived / retracted，lock_for 可用 6h / 3d / 6小时 / 3天。
+- 外部平台只暴露 darkroom_enter 和只读 darkroom_view。darkroom_view 没到锁门时间只返回 unlock_at，不返回正文；到点后才返回 content。
 - darkroom_enter 只返回门口事件和状态，不回显 note 正文。
 
 自省：
