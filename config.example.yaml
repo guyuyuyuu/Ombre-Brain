@@ -272,7 +272,10 @@ gateway:
   # Optional prompt cache hints / 可选提示缓存参数
   # openai: send prompt_cache_key using X-Ombre-Session-Id; leave empty for other providers.
   # anthropic: send native top-level cache_control on protocol: anthropic upstreams.
-  # openai: 使用 X-Ombre-Session-Id 发送 prompt_cache_key；anthropic: 在原生 Anthropic 上游发送 cache_control。
+  # anthropic_explicit: put cache_control on the last message content block for older proxies.
+  # openai: 使用 X-Ombre-Session-Id 发送 prompt_cache_key；
+  # anthropic: 在原生 Anthropic 上游发送顶层 cache_control；
+  # anthropic_explicit: 给只认旧式显式断点的中转站使用。
   prompt_cache: "openai"
   # prompt_cache_retention: "24h"  # Optional for supported OpenAI models / 支持模型可选
   # Optional multi-upstream mode / 可选多上游模式
@@ -312,6 +315,7 @@ gateway:
   #     api_key_env: "OMBRE_GATEWAY_ANTHROPIC_API_KEY"
   #     anthropic_version: "2023-06-01"
   #     prompt_cache: "anthropic"
+  #     # prompt_cache: "anthropic_explicit"  # compatibility mode for proxies without top-level cache_control
   #     # prompt_cache_retention: "1h"  # optional; default cache TTL is 5 minutes
   #     default_model: "claude-sonnet"
   #     models:

@@ -1679,6 +1679,89 @@ def test_gateway_forwards_native_anthropic_messages(monkeypatch, test_config, bu
     assert "今天怎么样？" in forwarded["messages"][-1]["content"]
 
 
+def test_gateway_forwards_native_anthropic_explicit_cache_control(monkeypatch, test_config, bucket_mgr):
+    monkeypatch.setenv("OMBRE_GATEWAY_TOKEN", "gateway-secret")
+    monkeypatch.setenv("OMBRE_GATEWAY_ANTHROPIC_API_KEY", "anthropic-upstream-secret")
+    captured = []
+
+    def upstream_handler(request: httpx.Request) -> httpx.Response:
+        captured.append(json.loads(request.content.decode("utf-8")))
+        return httpx.Response(
+            200,
+            json={
+                "id": "msg_native",
+                "type": "message",
+                "role": "assistant",
+                "model": "claude-3-5-sonnet-latest",
+                "content": [{"type": "text", "text": "native ok"}],
+                "stop_reason": "end_turn",
+                "stop_sequence": None,
+                "usage": {"input_tokens": 24, "output_tokens": 2},
+            },
+        )
+
+    cfg = _gateway_config(
+        test_config,
+        upstream_base_url="",
+        upstream_models=[],
+        upstream_default_model="claude/native",
+        upstreams=[
+            {
+                "name": "anthropic-native",
+                "protocol": "anthropic",
+                "base_url": "https://claude.example/v1",
+                "api_key_env": "OMBRE_GATEWAY_ANTHROPIC_API_KEY",
+                "default_model": "claude/native",
+                "prompt_cache": "anthropic_explicit",
+                "prompt_cache_retention": "1h",
+                "models": [
+                    {
+                        "id": "claude/native",
+                        "upstream_model": "claude-3-5-sonnet-latest",
+                    }
+                ],
+            }
+        ],
+    )
+    state_store = GatewayStateStore(f"{cfg['buckets_dir']}\\gateway_state.db")
+    http_client = httpx.AsyncClient(transport=httpx.MockTransport(upstream_handler), timeout=10.0)
+    service = GatewayService(
+        config=cfg,
+        bucket_mgr=bucket_mgr,
+        dehydrator=DummyDehydrator(),
+        embedding_engine=DummyEmbeddingEngine(enabled=False),
+        state_store=state_store,
+        persona_engine=DummyPersonaEngine(),
+        http_client=http_client,
+    )
+    app = create_gateway_app(config=cfg, service=service)
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/messages",
+            headers={
+                "x-api-key": "gateway-secret",
+                "anthropic-version": "2023-06-01",
+                "X-Ombre-Session-Id": "sess-native-anthropic-explicit",
+            },
+            json={
+                "model": "claude/native",
+                "system": "你是一个自然聊天助手。",
+                "messages": [{"role": "user", "content": "今天怎么样？"}],
+                "max_tokens": 256,
+            },
+        )
+
+    assert response.status_code == 200
+    forwarded = captured[0]
+    assert "cache_control" not in forwarded
+    last_content = forwarded["messages"][-1]["content"]
+    assert isinstance(last_content, list)
+    assert last_content[-1]["type"] == "text"
+    assert "今天怎么样？" in last_content[-1]["text"]
+    assert last_content[-1]["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
+
+
 def test_gateway_streams_native_anthropic_messages(monkeypatch, test_config, bucket_mgr):
     monkeypatch.setenv("OMBRE_GATEWAY_TOKEN", "gateway-secret")
     monkeypatch.setenv("OMBRE_GATEWAY_ANTHROPIC_API_KEY", "anthropic-upstream-secret")

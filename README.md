@@ -476,6 +476,7 @@ gateway:
       api_key_env: "OMBRE_GATEWAY_ANTHROPIC_API_KEY"
       anthropic_version: "2023-06-01"
       prompt_cache: "anthropic"
+      # prompt_cache: "anthropic_explicit"  # 部分中转站不支持顶层 cache_control 时使用
       # prompt_cache_retention: "1h"  # 不写时走 Anthropic 默认 5 分钟 TTL
       default_model: "claude-sonnet"
       models:
@@ -485,7 +486,15 @@ gateway:
 
 `protocol: "anthropic"` 只影响 Anthropic-compatible 客户端打来的 `/v1/messages`：Gateway 仍会先注入记忆，再用 `x-api-key` 和 `anthropic-version` 转发到上游 `/messages`。这样 prompt cache、`cache_read_input_tokens` / `cache_creation_input_tokens` 这类 Anthropic 原生字段会保留下来。普通 OpenAI-compatible 客户端继续走 `/v1/chat/completions`。
 
-`prompt_cache: "openai"` 和 `prompt_cache_retention: "24h"` 是 OpenAI prompt cache 提示。Gateway 会给上游请求加 `prompt_cache_key` 和 `prompt_cache_retention`。`prompt_cache: "anthropic"` 只在 `protocol: "anthropic"` 上游生效，会给原生 Messages 请求加顶层 `cache_control: {"type": "ephemeral"}`；`prompt_cache_retention: "1h"` 会改成 1 小时 TTL。不确定上游是否支持时保持关闭：
+`prompt_cache: "openai"` 和 `prompt_cache_retention: "24h"` 是 OpenAI prompt cache 提示。Gateway 会给上游请求加 `prompt_cache_key` 和 `prompt_cache_retention`。`prompt_cache: "anthropic"` 只在 `protocol: "anthropic"` 上游生效，会给原生 Messages 请求加顶层 `cache_control: {"type": "ephemeral"}`；`prompt_cache_retention: "1h"` 会改成 1 小时 TTL。
+
+如果某个中转站只认旧式 Anthropic 显式缓存断点，把上游改成：
+
+```yaml
+prompt_cache: "anthropic_explicit"
+```
+
+这个模式不会加顶层 `cache_control`，而是把 `cache_control` 挂到最后一条 message 的 content block 上。不确定上游是否支持时保持关闭：
 
 ```yaml
 prompt_cache: ""

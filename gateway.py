@@ -3787,8 +3787,18 @@ class GatewayService:
         upstream: dict[str, Any],
     ) -> None:
         strategy = str(upstream.get("prompt_cache") or "").strip().lower()
-        if strategy != "anthropic" or payload.get("cache_control"):
+        if strategy not in {"anthropic", "anthropic_explicit", "anthropic-explicit", "anthropic_block", "anthropic-block"}:
             return
+        cache_control = self._anthropic_cache_control(upstream)
+        if strategy == "anthropic":
+            if payload.get("cache_control"):
+                return
+            payload["cache_control"] = cache_control
+            return
+
+        self._apply_explicit_anthropic_cache_control(payload, cache_control)
+
+    def _anthropic_cache_control(self, upstream: dict[str, Any]) -> dict[str, str]:
         cache_control: dict[str, str] = {"type": "ephemeral"}
         retention = str(
             upstream.get("prompt_cache_ttl")
@@ -3797,7 +3807,49 @@ class GatewayService:
         ).strip()
         if retention == "1h":
             cache_control["ttl"] = "1h"
-        payload["cache_control"] = cache_control
+        return cache_control
+
+    def _apply_explicit_anthropic_cache_control(
+        self,
+        payload: dict[str, Any],
+        cache_control: dict[str, str],
+    ) -> None:
+        for message in reversed(payload.get("messages", [])):
+            if not isinstance(message, dict):
+                continue
+            if self._attach_cache_control_to_anthropic_content(message, "content", cache_control):
+                return
+        self._attach_cache_control_to_anthropic_content(payload, "system", cache_control)
+
+    def _attach_cache_control_to_anthropic_content(
+        self,
+        container: dict[str, Any],
+        field: str,
+        cache_control: dict[str, str],
+    ) -> bool:
+        content = container.get(field)
+        if isinstance(content, str):
+            if not content.strip():
+                return False
+            container[field] = [
+                {
+                    "type": "text",
+                    "text": content,
+                    "cache_control": deepcopy(cache_control),
+                }
+            ]
+            return True
+        if not isinstance(content, list):
+            return False
+        for block in reversed(content):
+            if not isinstance(block, dict):
+                continue
+            if block.get("cache_control"):
+                return True
+            if block.get("type") in {"text", "image", "document", "tool_result"}:
+                block["cache_control"] = deepcopy(cache_control)
+                return True
+        return False
 
     def _openai_content_to_anthropic_blocks(self, content: Any) -> str | list[dict[str, Any]]:
         if content is None:
