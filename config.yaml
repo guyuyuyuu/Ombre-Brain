@@ -1,0 +1,13 @@
+identity:
+  ai_name: "克雨"
+  user_name: "guyu"
+  user_display_name: "谷雨"
+  user_aliases:
+    - "谷雨"
+    - "guyu"
+
+persona:
+  profile_id: "keyu_guyu"
+
+gateway:
+  default_session_id: "guyu-main"
