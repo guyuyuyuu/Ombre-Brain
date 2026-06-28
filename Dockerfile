@@ -37,4 +37,4 @@ ENV OMBRE_BUCKETS_DIR=/app/buckets
 EXPOSE 8000
 EXPOSE 8010
 
-CMD ["bash", "start.sh"]
+CMD ["python", "launcher.py"]
