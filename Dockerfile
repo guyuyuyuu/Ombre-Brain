@@ -20,7 +20,8 @@ COPY *.py .
 COPY resources ./resources
 COPY scripts ./scripts
 COPY dashboard.html .
-COPY config.example.yaml ./config.yaml
+COPY config.example.yaml ./config.example.yaml
+COPY config.yaml ./config.yaml
 RUN chmod +x scripts/*.sh
 
 # Persistent mount point: bucket data
@@ -33,5 +34,6 @@ ENV OMBRE_TRANSPORT=streamable-http
 ENV OMBRE_BUCKETS_DIR=/app/buckets
 
 EXPOSE 8000
+EXPOSE 8010
 
-CMD ["python", "server.py"]
+CMD ["bash", "start.sh"]
