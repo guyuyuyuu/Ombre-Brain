@@ -11,3 +11,13 @@ persona:
 
 gateway:
   default_session_id: "guyu-main"
+  upstreams:
+    - name: "deepseek"
+      protocol: "openai"
+      base_url: "https://api.deepseek.com/v1"
+      api_key_env: "OMBRE_GATEWAY_DEEPSEEK_API_KEY"
+      default_model: "deepseek-chat"
+      prompt_cache: ""
+      models:
+        - "deepseek-chat"
+        - "deepseek-reasoner"
