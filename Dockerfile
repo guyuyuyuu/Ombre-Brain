@@ -22,7 +22,8 @@ COPY scripts ./scripts
 COPY dashboard.html .
 COPY config.example.yaml ./config.example.yaml
 COPY config.yaml ./config.yaml
-RUN chmod +x scripts/*.sh
+COPY start.sh .
+RUN chmod +x scripts/*.sh start.sh
 
 # Persistent mount point: bucket data
 # 持久化挂载点：记忆数据
