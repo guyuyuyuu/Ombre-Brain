@@ -4968,6 +4968,60 @@ def test_gateway_direct_short_bucket_renders_original(
     assert "第二句细节也应该保留" in injected
 
 
+def test_gateway_hook_recall_returns_cards_without_upstream(
+    monkeypatch,
+    test_config,
+    bucket_mgr,
+):
+    bucket_id = _create_bucket(
+        bucket_mgr,
+        content="小雨说蓝色偏好要被可靠记住。\n第二句细节也应该保留。",
+        name="蓝色偏好",
+        hours_ago=2,
+        importance=6,
+        domain=["日常"],
+    )
+    app, _, _, captured = _build_service(
+        monkeypatch,
+        _gateway_config(
+            test_config,
+            recent_context_budget=0,
+            recalled_memory_budget=500,
+            related_memory_budget=0,
+            current_inner_state_interval_rounds=0,
+        ),
+        bucket_mgr,
+        embedding_results=[(bucket_id, 0.96)],
+    )
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/hook/recall",
+            headers={"Authorization": "Bearer gateway-secret"},
+            json={
+                "query": "蓝色偏好",
+                "session_id": "sess-hook-recall",
+                "max_cards": 1,
+            },
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert captured == []
+    assert payload["ok"] is True
+    assert len(payload["cards"]) == 1
+    card = payload["cards"][0]
+    assert card["bucket_id"] == bucket_id
+    assert card["source"] == "ombre_gateway"
+    assert card["source_kind"] == "direct"
+    assert card["use_mode"] in {"explicit", "light_touch"}
+    assert card["confidence"] in {"high", "medium", "low"}
+    assert "蓝色偏好" in card["text"]
+    assert "[Ombre Gateway Hook Recall]" in payload["additional_context"]
+    assert "[reading_note id=ombre:" in payload["additional_context"]
+    assert payload["notes"] == payload["cards"]
+
+
 def test_gateway_direct_event_date_tag_suppresses_created_tag(
     monkeypatch,
     test_config,
