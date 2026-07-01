@@ -5022,6 +5022,65 @@ def test_gateway_hook_recall_returns_cards_without_upstream(
     assert payload["notes"] == payload["cards"]
 
 
+def test_gateway_hook_recall_normalizes_pronouns_with_configured_identity(
+    monkeypatch,
+    test_config,
+    bucket_mgr,
+):
+    cfg = _gateway_config(
+        test_config,
+        recent_context_budget=0,
+        recalled_memory_budget=500,
+        related_memory_budget=0,
+        current_inner_state_interval_rounds=0,
+        query_planner_enabled=False,
+    )
+    cfg["identity"] = {
+        **cfg.get("identity", {}),
+        "ai_name": "Lapis",
+        "user_name": "Rain",
+        "user_display_name": "小雨",
+    }
+    bucket_id = _create_bucket(
+        bucket_mgr,
+        content="### moment\nLapis 的笔友名册包括忱孚和 Claude 初。",
+        name="Lapis 的笔友名册",
+        hours_ago=2,
+        importance=8,
+        domain=["社交"],
+    )
+    embedding_queries: list[str] = []
+    app, service, _, captured = _build_service(
+        monkeypatch,
+        cfg,
+        bucket_mgr,
+        embedding_results={"Lapis 的笔友都有谁？": [(bucket_id, 0.96)]},
+        embedding_queries=embedding_queries,
+    )
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/hook/recall",
+            headers={"Authorization": "Bearer gateway-secret"},
+            json={
+                "query": "你的笔友都有谁？",
+                "session_id": "sess-hook-recall-pronoun",
+                "max_cards": 1,
+            },
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert captured == []
+    assert payload["query"] == "你的笔友都有谁？"
+    assert payload["recall_query"] == "Lapis 的笔友都有谁？"
+    assert any(query == "Lapis 的笔友都有谁？" for query in embedding_queries)
+    assert len(payload["cards"]) == 1
+    assert payload["cards"][0]["bucket_id"] == bucket_id
+    assert "Lapis 的笔友名册" in payload["additional_context"]
+    assert service._hook_recall_query_for_memory("我的蓝色偏好是什么？") == "小雨 的蓝色偏好是什么？"
+
+
 def test_gateway_direct_event_date_tag_suppresses_created_tag(
     monkeypatch,
     test_config,

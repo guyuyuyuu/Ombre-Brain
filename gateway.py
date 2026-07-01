@@ -2052,6 +2052,7 @@ class GatewayService:
         ).strip()
         if not query:
             return JSONResponse({"error": "query is required"}, status_code=400)
+        recall_query = self._hook_recall_query_for_memory(query)
 
         session_id = str(
             body.get("session_id")
@@ -2064,7 +2065,9 @@ class GatewayService:
             or (self.upstream_models[0] if self.upstream_models else "")
         ).strip()
         if not messages:
-            messages = [{"role": "user", "content": query}]
+            messages = [{"role": "user", "content": recall_query}]
+        elif recall_query != query:
+            messages = self._hook_recall_messages_with_query(messages, recall_query)
 
         max_cards = bounded_int(body.get("max_cards"), default=2, floor=0, ceiling=5)
         max_chars = bounded_int(body.get("max_chars"), default=1200, floor=160, ceiling=2400)
@@ -2108,6 +2111,8 @@ class GatewayService:
             "additional_context": self._render_hook_recall_additional_context(cards),
             "recalled_ids": list(recalled_ids or []),
         }
+        if recall_query != query:
+            response["recall_query"] = recall_query
         if include_debug:
             debug = dict(debug_payload)
             if not include_context_debug:
@@ -2125,6 +2130,91 @@ class GatewayService:
                     debug.pop(key, None)
             response["debug"] = debug
         return JSONResponse(response)
+
+    def _hook_recall_query_for_memory(self, query: str) -> str:
+        text = str(query or "").strip()
+        ai_name = str(self.identity.get("ai_name") or "").strip()
+        user_name = str(
+            self.identity.get("user_display_name")
+            or self.identity.get("user_name")
+            or ""
+        ).strip()
+        if not text:
+            return text
+        compact = self._compact_lookup_key(text)
+        ai_key = self._compact_lookup_key(ai_name)
+        user_key = self._compact_lookup_key(user_name)
+        if not compact:
+            return text
+
+        rewritten = text
+        if ai_name and not (ai_key and ai_key in compact):
+            replacements = (
+                ("你自己的", f"{ai_name} 自己的"),
+                ("你自己", f"{ai_name} 自己"),
+                ("你的", f"{ai_name} 的"),
+                ("你有", f"{ai_name} 有"),
+                ("你会", f"{ai_name} 会"),
+                ("你能", f"{ai_name} 能"),
+                ("你喜欢", f"{ai_name} 喜欢"),
+                ("你讨厌", f"{ai_name} 讨厌"),
+                ("你记得", f"{ai_name} 记得"),
+                ("你认识", f"{ai_name} 认识"),
+            )
+            for old, new in replacements:
+                rewritten = rewritten.replace(old, new)
+
+            for term in IDENTITY_NAME_AI_ADDRESS_TERMS:
+                label = str(term or "").strip()
+                if not label:
+                    continue
+                rewritten = rewritten.replace(f"{label}的", f"{ai_name} 的")
+                rewritten = rewritten.replace(f"{label}有", f"{ai_name} 有")
+
+        if user_name and not (user_key and user_key in compact):
+            replacements = (
+                ("我自己的", f"{user_name} 自己的"),
+                ("我自己", f"{user_name} 自己"),
+                ("我的", f"{user_name} 的"),
+                ("我有", f"{user_name} 有"),
+                ("我喜欢", f"{user_name} 喜欢"),
+                ("我讨厌", f"{user_name} 讨厌"),
+                ("我记得", f"{user_name} 记得"),
+                ("我认识", f"{user_name} 认识"),
+            )
+            for old, new in replacements:
+                rewritten = rewritten.replace(old, new)
+
+        return rewritten
+
+    @staticmethod
+    def _hook_recall_messages_with_query(
+        messages: list[dict[str, Any]],
+        recall_query: str,
+    ) -> list[dict[str, Any]]:
+        rewritten = deepcopy(messages)
+        target_index: int | None = None
+        for index in range(len(rewritten) - 1, -1, -1):
+            message = rewritten[index]
+            if not isinstance(message, dict):
+                continue
+            role = message.get("role")
+            if role == "system":
+                continue
+            if role == "user":
+                target_index = index
+            break
+        if target_index is None:
+            for index in range(len(rewritten) - 1, -1, -1):
+                message = rewritten[index]
+                if isinstance(message, dict) and message.get("role") == "user":
+                    target_index = index
+                    break
+        if target_index is None:
+            rewritten.append({"role": "user", "content": recall_query})
+        else:
+            rewritten[target_index]["content"] = recall_query
+        return rewritten
 
     async def handle_recall_eval_debug(self, request: Request) -> JSONResponse:
         auth_result = self._authorize(request.headers.get("Authorization", ""))
