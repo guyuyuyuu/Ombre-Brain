@@ -51,6 +51,32 @@ def test_todo_store_done_item_is_not_reopened_by_sync(tmp_path):
     assert store.get("todo_a")["status"] == "done"
 
 
+def test_todo_store_done_defaults_resolved_at(tmp_path):
+    store = TodoStore({"state_dir": str(tmp_path / "state"), "buckets_dir": str(tmp_path / "buckets")})
+    store.sync_from_entries(
+        [
+            {
+                "id": "todo_a",
+                "bucket_id": "bucket_a",
+                "moment_id": "moment_a",
+                "section": "followup",
+                "source_hash": "hash_a",
+                "title": "待办桶",
+                "date": "2026-06-25",
+                "updated": "2026-06-25T10:00:00+08:00",
+                "text": "修 VPS smoke",
+            }
+        ]
+    )
+
+    done = store.set_status("todo_a", "done")
+
+    assert done["status"] == "done"
+    assert done["resolved_at"]
+    assert done["resolved_at"][:4].isdigit()
+    assert done["resolved_at"][4] == "-"
+
+
 def test_todo_store_missing_open_items_become_inactive(tmp_path):
     store = TodoStore({"state_dir": str(tmp_path / "state"), "buckets_dir": str(tmp_path / "buckets")})
     store.sync_from_entries(

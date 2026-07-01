@@ -143,7 +143,7 @@ class TodoStore:
         if status not in {"open", "done", "ignored"}:
             raise ValueError("invalid todo status")
         now = now_iso()
-        resolved = resolved_at if status == "done" else None
+        resolved = (resolved_at or now) if status == "done" else None
         conn = self._connect()
         try:
             with conn:

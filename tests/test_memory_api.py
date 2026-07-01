@@ -2795,6 +2795,7 @@ async def test_todo_api_marks_done_without_bucket_edit_and_writeback_skips_embed
     assert payload["embedding_queued"] is False
     assert "### followup_log" in after_writeback["content"]
     assert "[done " in after_writeback["content"]
+    assert "[done date_unknown]" not in after_writeback["content"]
     assert "修 VPS smoke，连续测两遍同一条内容" in after_writeback["content"]
     assert "### followup\n修 VPS smoke" not in after_writeback["content"]
     assert after_writeback["metadata"]["last_active"] == before["metadata"]["last_active"]
