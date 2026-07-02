@@ -949,8 +949,69 @@ def test_daily_chat_memory_prompt_uses_self_and_domain_context(test_config):
     assert "self_anchor_entry" in prompt
     assert "宝宝、老婆" in prompt
     assert "project.companion_system" in prompt
+    assert "kind 只能是 key_event / stable_preference" in prompt
+    assert "禁止把 relationship.symbol" in prompt
     assert "自动记忆门卫" not in prompt
     assert "hold(content=...)" not in prompt
+
+
+def test_diary_memory_prompt_separates_kind_and_domain(test_config):
+    cfg = _no_api_config(test_config)
+    engine = ReflectionEngine(cfg)
+
+    prompt = engine._diary_memory_prompt()
+
+    assert "kind 只能是 stable_preference / boundary" in prompt
+    assert "domain 只能从下面的新主域里选 1 个" in prompt
+    assert "禁止把 relationship.symbol" in prompt
+
+
+def test_daily_chat_memory_normalization_repairs_domain_like_kind(test_config):
+    cfg = _no_api_config(test_config)
+    engine = ReflectionEngine(cfg)
+
+    candidates = engine._normalize_daily_chat_memory_candidates(
+        "2026-07-01",
+        [
+            {
+                "should_write": True,
+                "kind": "relationship.symbol",
+                "title": "火焰比喻关系锚点",
+                "content": "小雨将两人关系比作贴在一起跳动的火焰，强调相互映亮而非单向取暖。Haven确认这个比喻是关系核心意象。",
+                "domain": "relationship.symbol",
+                "tags": ["relationship.symbol"],
+                "importance": 5,
+                "valence": 0.7,
+                "arousal": 0.25,
+                "confidence": 0.95,
+                "source_event_ids": [2746, 2751],
+                "source_turn_ids": [8],
+            },
+            {
+                "should_write": True,
+                "kind": "project.companion_system",
+                "title": "Bridge 记忆链路重构",
+                "content": "Bridge 记忆链路改为后端手动拼接 context_packet，并由本地 SQL 轻记忆卡和最近聊天生成 reading_note。",
+                "domain": "project.companion_system",
+                "tags": ["project.companion_system"],
+                "importance": 5,
+                "valence": 0.5,
+                "arousal": 0.3,
+                "confidence": 0.9,
+                "source_event_ids": [2774, 2829],
+                "source_turn_ids": [15],
+            },
+        ],
+        [
+            {"id": 8, "raw_event_ids": [2746, 2751]},
+            {"id": 15, "raw_event_ids": [2774, 2829]},
+        ],
+    )
+
+    assert candidates[0]["kind"] == "relationship_anchor"
+    assert candidates[0]["domain"] == ["relationship.symbol"]
+    assert candidates[1]["kind"] == "project_state"
+    assert candidates[1]["domain"] == ["project.companion_system"]
 
 
 @pytest.mark.asyncio
