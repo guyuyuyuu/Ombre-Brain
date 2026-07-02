@@ -159,10 +159,10 @@ def load_config(config_path: str = None) -> dict:
             "max_recent_candidates": 120,
         },
         "identity": {
-            "ai_name": "AI",
+            "ai_name": "克雨",
             "user_name": "User",
-            "user_display_name": "用户",
-            "user_aliases": ["对方"],
+            "user_display_name": "谷雨",
+            "user_aliases": ["谷雨"],
         },
         "dehydration": {
             "model": "deepseek-chat",
