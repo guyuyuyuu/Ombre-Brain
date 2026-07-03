@@ -1206,6 +1206,21 @@ def test_daily_chat_memory_pending_refresh_rejects_duplicates_and_social_noise(t
                     "source_event_ids": [5],
                 },
             },
+            {
+                "id": "markdown-noise",
+                "date": "2026-06-30",
+                "status": "pending",
+                "created_at": "2026-07-03T00:40:00+00:00",
+                "candidate": {
+                    "id": "markdown-noise",
+                    "date": "2026-06-30",
+                    "kind": "signal",
+                    "title": "**关于来源** 她说得对",
+                    "content": "**关于来源** 她说得对，很多这类文案确实是从乙女游戏和日漫叙事模式衍生出来的。",
+                    "confidence": 0.8,
+                    "source_event_ids": [6],
+                },
+            },
         ]
     )
 
@@ -1217,6 +1232,7 @@ def test_daily_chat_memory_pending_refresh_rejects_duplicates_and_social_noise(t
     assert statuses["older-project"] == "rejected"
     assert statuses["nickname-noise"] == "rejected"
     assert statuses["interest-noise"] == "rejected"
+    assert statuses["markdown-noise"] == "rejected"
 
 
 @pytest.mark.asyncio

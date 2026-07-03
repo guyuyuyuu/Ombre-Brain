@@ -1809,6 +1809,8 @@ class ReflectionEngine:
         ]
         if any(marker in text for marker in noise_markers):
             return True
+        if text.startswith("**"):
+            return True
         if "?" in text or "？" in text:
             question_noise = ["谁", "有没有", "是否", "还", "吗", "怎么"]
             if any(marker in text for marker in question_noise):
@@ -1878,6 +1880,10 @@ class ReflectionEngine:
             "参与意愿",
             "上瘾",
             "好奇",
+            "宝宝",
+            "老婆",
+            "哥哥",
+            "老公",
         ]
         return kind in {"signal", "relationship_anchor", "stable_preference"} and any(
             marker in text for marker in low_value_markers
@@ -1968,6 +1974,7 @@ class ReflectionEngine:
             "长期记忆",
             "聊天里",
             "的聊天",
+            "暗号或模式信号",
         ]
         if any(marker in text for marker in generic_markers):
             return True
@@ -2685,6 +2692,7 @@ class ReflectionEngine:
             r"^\d{4}-\d{1,2}-\d{1,2}\s*(?:发生|留下|记录|确认|表达)了?(?:一件|一条|一个|一段)?(?:可复用的|可长期召回的|可召回的|之后可能需要按日期回看的|仍会影响后续执行的)?(?:关键事件|暗号或模式信号|暗号|边界|偏好|承诺|项目状态|关系锚点|长期记忆)[：:]\s*",
             r"^\d{4}-\d{1,2}-\d{1,2}\s*的(?:日记|聊天)(?:《[^》]*》)?(?:里|中)?(?:包含|记录|确认|留下|表达)?了?(?:一条|一个|一段)?(?:可长期召回的|可召回的|之后可能需要按日期回看的|仍会影响后续执行的)?[^：:。]{0,32}[：:]\s*",
             r"^[^：:。！？!?]{1,48}?在\s*\d{4}-\d{1,2}-\d{1,2}\s*的聊天(?:里|中)?(?:包含|记录|确认|留下|表达)?了?(?:一个|一条|一段)?(?:可复用的|可长期召回的|可召回的|之后可能需要按日期回看的|仍会影响后续执行的)?(?:关键事件|暗号或模式信号|暗号|边界|偏好|承诺|项目状态|关系锚点|长期记忆)[：:]\s*",
+            r"^[^：:。！？!?]{1,48}?的(?:暗号或模式信号|关键事件|边界|偏好|承诺|项目状态|关系锚点|长期记忆)[：:]\s*",
             r"^(?:有一条|一条)(?:可长期召回的|可召回的)(?:边界|偏好|暗号|承诺|项目状态|关系锚点|长期记忆)[：:]\s*",
             r"^这是一条(?:长期记忆|可召回的记忆)[：:]?\s*",
         ]
