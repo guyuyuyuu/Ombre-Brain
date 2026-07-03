@@ -14,6 +14,7 @@ def test_load_config_defaults_relationship_weather_off(tmp_path):
     assert config["gateway"]["semantic_session_dedupe_threshold"] == 0.90
     assert config["gateway"]["semantic_session_dedupe_lexical_threshold"] == 0.82
     assert config["gateway"]["portrait_memory_include_anchors"] is False
+    assert config["gateway"]["operit_context_rewrite_enabled"] is False
     assert config["self_anchor"]["entry_bucket_id"] == ""
     assert config["write_path"]["semantic_search_timeout_seconds"] == 3
     assert config["memory_write_gate"]["auto_sources"] == ["operit", "workflow", "worker", "auto"]

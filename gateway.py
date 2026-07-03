@@ -566,6 +566,30 @@ EXTERNAL_CONTEXT_BLOCK_TITLES = {
     "相关记忆",
     "屏幕文本",
 }
+OPERIT_STABLE_CONTEXT_TITLES = {
+    "人设",
+    "角色卡",
+    "角色设定",
+    "固定规则",
+    "长期规则",
+    "系统提示",
+    "工具说明",
+    "工具列表",
+    "工具栏",
+    "使用说明",
+    "Persona",
+    "System Prompt",
+}
+OPERIT_STABLE_CONTEXT_KEYWORDS = (
+    "角色卡",
+    "角色设定",
+    "固定规则",
+    "长期规则",
+    "工具说明",
+    "工具列表",
+    "system prompt",
+    "persona",
+)
 MOMENT_SECTION_LABELS = {
     "body": "body",
     "moment": "moment",
@@ -847,6 +871,10 @@ class GatewayService:
         self.favorite_memory_budget = int(self.gateway_cfg.get("favorite_memory_budget", 180))
         self.favorite_memory_max_cards = max(0, int(self.gateway_cfg.get("favorite_memory_max_cards", 1)))
         self.related_memory_budget = int(self.gateway_cfg.get("related_memory_budget", 220))
+        self.operit_context_rewrite_enabled = self._bool_config_value(
+            self.gateway_cfg.get("operit_context_rewrite_enabled"),
+            False,
+        )
         self.bucket_list_cache_ttl_seconds = max(
             0.0,
             float(self.gateway_cfg.get("bucket_list_cache_ttl_seconds", 300)),
@@ -1047,6 +1075,7 @@ class GatewayService:
                 "date_recall_max_buckets": self.date_recall_max_buckets,
                 "recalled_memory_budget": self.recalled_budget,
                 "related_memory_budget": self.related_memory_budget,
+                "operit_context_rewrite_enabled": self.operit_context_rewrite_enabled,
                 "semantic_candidate_top_k": self.semantic_candidate_top_k,
                 "moment_search_limit": self.moment_search_limit,
                 "diffusion_inject_max_items": self.diffusion_inject_max_items,
@@ -1125,6 +1154,7 @@ class GatewayService:
             "date_recall_max_buckets": self.date_recall_max_buckets,
             "recalled_memory_budget": self.recalled_budget,
             "related_memory_budget": self.related_memory_budget,
+            "operit_context_rewrite_enabled": self.operit_context_rewrite_enabled,
             "semantic_candidate_top_k": self.semantic_candidate_top_k,
             "moment_search_limit": self.moment_search_limit,
             "diffusion_inject_max_items": self.diffusion_inject_max_items,
@@ -1564,6 +1594,13 @@ class GatewayService:
             self.related_memory_budget = max(0, int(payload["related_memory_budget"]))
             self.gateway_cfg["related_memory_budget"] = self.related_memory_budget
             updated.append("gateway.related_memory_budget")
+        if "operit_context_rewrite_enabled" in payload:
+            self.operit_context_rewrite_enabled = self._bool_config_value(
+                payload["operit_context_rewrite_enabled"],
+                False,
+            )
+            self.gateway_cfg["operit_context_rewrite_enabled"] = self.operit_context_rewrite_enabled
+            updated.append("gateway.operit_context_rewrite_enabled")
         if "semantic_candidate_top_k" in payload:
             self.semantic_candidate_top_k = max(
                 self.dynamic_top_k,
@@ -2924,8 +2961,27 @@ class GatewayService:
         forward_payload = deepcopy(payload)
         forward_payload["model"] = model
         self._restore_cached_reasoning_content(session_id, forward_payload.get("messages"))
+        operit_context_rewrite_debug = self._operit_context_rewrite_debug_base()
+        messages_for_forward = forward_payload["messages"]
+        if self.operit_context_rewrite_enabled:
+            (
+                messages_for_forward,
+                operit_stable_context,
+                operit_activity_context,
+                operit_context_rewrite_debug,
+            ) = self._rewrite_operit_context_for_forward(messages_for_forward)
+            stable_context = self._append_named_context_section(
+                stable_context,
+                "Operit Stable Context",
+                operit_stable_context,
+            )
+            dynamic_context = self._append_named_context_section(
+                dynamic_context,
+                "Operit Activity Context",
+                operit_activity_context,
+            )
         forward_payload["messages"] = self._inject_context_messages(
-            forward_payload["messages"],
+            messages_for_forward,
             stable_context,
             dynamic_context,
         )
@@ -2962,6 +3018,7 @@ class GatewayService:
             "dynamic_context_chars": len(dynamic_context),
             "query_planner_triggered": bool(query_planner_debug.get("triggered")),
             "query_planner_skip_reason": str(query_planner_debug.get("skip_reason") or ""),
+            "operit_context_rewrite": operit_context_rewrite_debug,
         }
 
         def log_prepare_timing() -> None:
@@ -14350,6 +14407,14 @@ class GatewayService:
             "Many memories should shape tone silently; do not mention memory or hidden context unless asked."
         )
 
+    @staticmethod
+    def _append_named_context_section(base: str, title: str, content: str) -> str:
+        cleaned = str(content or "").strip()
+        if not cleaned:
+            return str(base or "").strip()
+        section = f"{title}\n{cleaned}"
+        return "\n\n".join(part for part in (str(base or "").strip(), section) if part)
+
     def _bucket_runtime_gate_payload(
         self,
         bucket: dict,
@@ -15429,6 +15494,270 @@ class GatewayService:
         else:
             updated["content"] = prefix
         return updated
+
+    def _operit_context_rewrite_debug_base(self) -> dict[str, Any]:
+        return {
+            "enabled": bool(getattr(self, "operit_context_rewrite_enabled", False)),
+            "applied": False,
+            "skip_reason": "disabled" if not getattr(self, "operit_context_rewrite_enabled", False) else "",
+            "stable_chars": 0,
+            "activity_chars": 0,
+            "cleaned_message_count": 0,
+            "dropped_message_count": 0,
+        }
+
+    def _rewrite_operit_context_for_forward(
+        self,
+        messages: list[dict],
+    ) -> tuple[list[dict], str, str, dict[str, Any]]:
+        debug = self._operit_context_rewrite_debug_base()
+        if not self.operit_context_rewrite_enabled:
+            return messages, "", "", debug
+        debug["skip_reason"] = ""
+        if not isinstance(messages, list) or not messages:
+            debug["skip_reason"] = "invalid_messages"
+            return messages, "", "", debug
+        if self._messages_contain_tool_protocol(messages):
+            debug["skip_reason"] = "tool_protocol"
+            return messages, "", "", debug
+        if self._messages_contain_non_text_content(messages):
+            debug["skip_reason"] = "non_text_content"
+            return messages, "", "", debug
+        if not any(self._message_contains_operit_context(message) for message in messages):
+            debug["skip_reason"] = "no_operit_context"
+            return messages, "", "", debug
+
+        current_user_index = self._current_turn_user_index(messages)
+        stable_parts: list[str] = []
+        activity_parts: list[str] = []
+        rewritten: list[dict] = []
+        for index, message in enumerate(messages):
+            if not isinstance(message, dict) or message.get("role") != "user":
+                rewritten.append(deepcopy(message))
+                continue
+            content = message.get("content")
+            if not isinstance(content, str):
+                rewritten.append(deepcopy(message))
+                continue
+            cleaned, stable, activity, found = self._split_operit_context_from_user_text(content)
+            if not found:
+                rewritten.append(deepcopy(message))
+                continue
+            debug["cleaned_message_count"] += 1
+            stable_parts.extend(stable)
+            if current_user_index is not None and index >= current_user_index:
+                activity_parts.extend(activity)
+            if cleaned:
+                updated = deepcopy(message)
+                updated["content"] = cleaned
+                rewritten.append(updated)
+            else:
+                debug["dropped_message_count"] += 1
+
+        stable_context = self._format_operit_context_block(
+            "Client-provided stable Operit context extracted from attachments. Treat it as private app context, not user speech.",
+            stable_parts,
+            max_chars=1800,
+        )
+        activity_context = self._format_operit_context_block(
+            "Client-provided current Operit activity context extracted from attachments. Use only if it helps the current reply.",
+            activity_parts,
+            max_chars=1800,
+        )
+        if debug["cleaned_message_count"] <= 0:
+            debug["skip_reason"] = "no_rewriteable_context"
+            return messages, "", "", debug
+        debug["applied"] = True
+        debug["stable_chars"] = len(stable_context)
+        debug["activity_chars"] = len(activity_context)
+        return rewritten, stable_context, activity_context, debug
+
+    def _messages_contain_tool_protocol(self, messages: list[dict]) -> bool:
+        for message in messages or []:
+            if not isinstance(message, dict):
+                continue
+            if message.get("role") == "tool" or message.get("tool_call_id"):
+                return True
+            tool_calls = message.get("tool_calls")
+            if isinstance(tool_calls, list) and tool_calls:
+                return True
+            content = message.get("content")
+            if isinstance(content, list):
+                for item in content:
+                    if isinstance(item, dict) and item.get("type") in {"tool_result", "tool_use"}:
+                        return True
+        return False
+
+    def _messages_contain_non_text_content(self, messages: list[dict]) -> bool:
+        for message in messages or []:
+            if not isinstance(message, dict):
+                continue
+            content = message.get("content")
+            if not isinstance(content, list):
+                continue
+            for item in content:
+                if not isinstance(item, dict):
+                    return True
+                item_type = item.get("type")
+                if item_type not in {"text", "input_text"}:
+                    return True
+        return False
+
+    def _message_contains_operit_context(self, message: dict[str, Any]) -> bool:
+        if not isinstance(message, dict):
+            return False
+        content = message.get("content")
+        if isinstance(content, str):
+            return self._text_contains_operit_context(content)
+        if isinstance(content, list):
+            return any(
+                isinstance(item, dict)
+                and self._text_contains_operit_context(str(item.get("text") or item.get("input_text") or ""))
+                for item in content
+            )
+        return False
+
+    @staticmethod
+    def _text_contains_operit_context(text: str) -> bool:
+        lowered = str(text or "").lower()
+        return (
+            "message_insert_extra_bundle" in lowered
+            or "<workspace_attachment" in lowered
+            or ('filename="time:' in lowered and "<attachment" in lowered)
+        )
+
+    def _split_operit_context_from_user_text(
+        self,
+        text: str,
+    ) -> tuple[str, list[str], list[str], bool]:
+        raw = str(text or "")
+        found = self._text_contains_operit_context(raw) or self._has_external_context_title(raw)
+        if not found:
+            return raw, [], [], False
+
+        stable_parts: list[str] = []
+        activity_parts: list[str] = []
+
+        def collect_from_attachment(match: re.Match) -> str:
+            stable, activity = self._operit_context_sections_from_text(
+                self._inner_text_from_tag_block(match.group(0), "attachment"),
+            )
+            stable_parts.extend(stable)
+            activity_parts.extend(activity)
+            return ""
+
+        def collect_from_workspace(match: re.Match) -> str:
+            text_value = self._inner_text_from_tag_block(match.group(0), "workspace_attachment")
+            if text_value.strip():
+                activity_parts.append(f"【工作区】\n{text_value.strip()}")
+            return ""
+
+        without_workspace = WORKSPACE_ATTACHMENT_RE.sub(collect_from_workspace, raw)
+        without_attachments = EXTERNAL_CONTEXT_ATTACHMENT_RE.sub(collect_from_attachment, without_workspace)
+        without_attachments = SELF_CLOSING_ATTACHMENT_RE.sub("", without_attachments)
+        stable, activity = self._operit_context_sections_from_text(without_attachments)
+        stable_parts.extend(stable)
+        activity_parts.extend(activity)
+        cleaned = self._strip_external_context_from_user_text(raw)
+        return cleaned, stable_parts, activity_parts, True
+
+    @staticmethod
+    def _inner_text_from_tag_block(block: str, tag_name: str) -> str:
+        text = re.sub(
+            rf"^\s*<{tag_name}\b[^>]*>",
+            "",
+            str(block or ""),
+            flags=re.IGNORECASE,
+        )
+        text = re.sub(rf"</{tag_name}>\s*$", "", text, flags=re.IGNORECASE)
+        text = re.sub(r"<[^>]+>", "", text)
+        text = re.sub(r"[ \t]{2,}", " ", text)
+        text = re.sub(r"\n{3,}", "\n\n", text)
+        return text.strip()
+
+    @staticmethod
+    def _has_external_context_title(text: str) -> bool:
+        for line in str(text or "").splitlines():
+            stripped = line.strip()
+            if not stripped.startswith("【") or "】" not in stripped:
+                continue
+            title = stripped[1 : stripped.index("】")].strip()
+            if title in EXTERNAL_CONTEXT_BLOCK_TITLES or title in OPERIT_STABLE_CONTEXT_TITLES:
+                return True
+        return False
+
+    def _operit_context_sections_from_text(self, text: str) -> tuple[list[str], list[str]]:
+        stable_parts: list[str] = []
+        activity_parts: list[str] = []
+        sections: list[tuple[str, list[str]]] = []
+        current_title = ""
+        current_lines: list[str] = []
+
+        def flush() -> None:
+            nonlocal current_title, current_lines
+            body = "\n".join(line for line in current_lines).strip()
+            if current_title or body:
+                sections.append((current_title, current_lines[:]))
+            current_title = ""
+            current_lines = []
+
+        for line in str(text or "").splitlines():
+            stripped = line.strip()
+            match = re.match(r"^【([^】]+)】\s*(.*)$", stripped)
+            if match:
+                flush()
+                current_title = match.group(1).strip()
+                rest = match.group(2).strip()
+                current_lines = [rest] if rest else []
+                continue
+            current_lines.append(line)
+        flush()
+
+        for title, lines in sections:
+            body = "\n".join(line for line in lines).strip()
+            if not title and not body:
+                continue
+            if title:
+                part = f"【{title}】" + (f"\n{body}" if body else "")
+            else:
+                part = body
+            if not part.strip():
+                continue
+            if self._operit_section_is_stable(title, body):
+                stable_parts.append(part)
+            elif title in EXTERNAL_CONTEXT_BLOCK_TITLES or title or self._text_contains_operit_context(body):
+                activity_parts.append(part)
+        return stable_parts, activity_parts
+
+    @staticmethod
+    def _operit_section_is_stable(title: str, body: str) -> bool:
+        title_text = str(title or "").strip()
+        if title_text in OPERIT_STABLE_CONTEXT_TITLES:
+            return True
+        haystack = f"{title_text}\n{body}".lower()
+        return any(keyword.lower() in haystack for keyword in OPERIT_STABLE_CONTEXT_KEYWORDS)
+
+    def _format_operit_context_block(
+        self,
+        intro: str,
+        parts: list[str],
+        *,
+        max_chars: int,
+    ) -> str:
+        unique_parts: list[str] = []
+        seen: set[str] = set()
+        for part in parts:
+            cleaned = str(part or "").strip()
+            if not cleaned:
+                continue
+            key = re.sub(r"\s+", " ", cleaned)
+            if key in seen:
+                continue
+            seen.add(key)
+            unique_parts.append(cleaned)
+        if not unique_parts:
+            return ""
+        return self._trim_text("\n\n".join([intro, *unique_parts]), max_chars)
 
     def _restore_cached_reasoning_content(self, session_id: str, messages: Any) -> None:
         if not isinstance(messages, list) or not any(

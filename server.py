@@ -11022,6 +11022,10 @@ async def api_config_get(request):
             "current_inner_state_interval_rounds": gateway_cfg.get("current_inner_state_interval_rounds", 0),
             "direct_render_mode": _normalize_direct_render_mode(gateway_cfg.get("direct_render_mode", "auto")),
             "retrieval_mode": _normalize_retrieval_mode(gateway_cfg.get("retrieval_mode", "graph")),
+            "operit_context_rewrite_enabled": _bool_value(
+                gateway_cfg.get("operit_context_rewrite_enabled"),
+                False,
+            ),
             "recall_fusion_mode": _normalize_recall_fusion_mode(gateway_cfg.get("recall_fusion_mode", "dynamic")),
             "word_map_hint_enabled": _bool_value(gateway_cfg.get("word_map_hint_enabled"), False),
             "portrait_memory_enabled": _bool_value(gateway_cfg.get("portrait_memory_enabled"), False),
@@ -11524,6 +11528,15 @@ async def api_config_update(request):
             gateway_cfg["retrieval_mode"] = _normalize_retrieval_mode(g["retrieval_mode"])
             gateway_hot_update_body["retrieval_mode"] = gateway_cfg["retrieval_mode"]
             updated.append("gateway.retrieval_mode")
+        if "operit_context_rewrite_enabled" in g:
+            gateway_cfg["operit_context_rewrite_enabled"] = _bool_value(
+                g["operit_context_rewrite_enabled"],
+                False,
+            )
+            gateway_hot_update_body["operit_context_rewrite_enabled"] = gateway_cfg[
+                "operit_context_rewrite_enabled"
+            ]
+            updated.append("gateway.operit_context_rewrite_enabled")
         if "recall_fusion_mode" in g:
             gateway_cfg["recall_fusion_mode"] = _normalize_recall_fusion_mode(g["recall_fusion_mode"])
             gateway_hot_update_body["recall_fusion_mode"] = gateway_cfg["recall_fusion_mode"]
@@ -11985,6 +11998,11 @@ async def api_config_update(request):
                     sc_gateway["direct_render_mode"] = _normalize_direct_render_mode(body["gateway"]["direct_render_mode"])
                 if "retrieval_mode" in body["gateway"]:
                     sc_gateway["retrieval_mode"] = _normalize_retrieval_mode(body["gateway"]["retrieval_mode"])
+                if "operit_context_rewrite_enabled" in body["gateway"]:
+                    sc_gateway["operit_context_rewrite_enabled"] = _bool_value(
+                        body["gateway"]["operit_context_rewrite_enabled"],
+                        False,
+                    )
                 if "recall_fusion_mode" in body["gateway"]:
                     sc_gateway["recall_fusion_mode"] = _normalize_recall_fusion_mode(
                         body["gateway"]["recall_fusion_mode"]

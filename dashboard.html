@@ -2677,6 +2677,14 @@
       </div>
       <div style="margin-top:-4px;margin-bottom:12px;padding-left:122px;font-size:11px;color:var(--text-light);">graph 是 p0 图召回；bucket 是接近 main 的直命中对照档</div>
       <div class="config-row">
+        <label>Operit 拆包</label>
+        <select id="cfg-operit-context-rewrite-enabled">
+          <option value="false">关闭</option>
+          <option value="true">开启</option>
+        </select>
+      </div>
+      <div style="margin-top:-4px;margin-bottom:12px;padding-left:122px;font-size:11px;color:var(--text-light);">仅处理 Operit 文本轮；工具轮和图片/文件轮会跳过，避免破坏工具协议</div>
+      <div class="config-row">
         <label>词图辅助</label>
         <select id="cfg-word-map-hint-enabled">
           <option value="false">关闭</option>
@@ -7236,6 +7244,8 @@ async function loadConfig() {
     document.getElementById('cfg-persona-context-rounds').value = personaRounds;
     document.getElementById('cfg-direct-render-mode').value = (cfg.gateway && cfg.gateway.direct_render_mode) || 'auto';
     document.getElementById('cfg-retrieval-mode').value = (cfg.gateway && cfg.gateway.retrieval_mode) || 'graph';
+    document.getElementById('cfg-operit-context-rewrite-enabled').value =
+      (cfg.gateway && cfg.gateway.operit_context_rewrite_enabled) ? 'true' : 'false';
     document.getElementById('cfg-word-map-hint-enabled').value =
       (cfg.gateway && cfg.gateway.word_map_hint_enabled) ? 'true' : 'false';
     document.getElementById('cfg-query-planner-enabled').value =
@@ -7472,6 +7482,7 @@ async function saveConfig(persist, persistEnv) {
       current_inner_state_interval_rounds: personaContextRounds,
       direct_render_mode: document.getElementById('cfg-direct-render-mode').value,
       retrieval_mode: document.getElementById('cfg-retrieval-mode').value,
+      operit_context_rewrite_enabled: document.getElementById('cfg-operit-context-rewrite-enabled').value === 'true',
       word_map_hint_enabled: document.getElementById('cfg-word-map-hint-enabled').value === 'true',
       query_planner_enabled: document.getElementById('cfg-query-planner-enabled').value === 'true',
       memory_sentinel_llm_enabled: document.getElementById('cfg-memory-sentinel-llm-enabled').value === 'true',

@@ -784,7 +784,9 @@ def test_gateway_mirrors_successful_turn_to_raw_events(monkeypatch, test_config,
         user_message=(
             "小雨这句原文要进保险箱 "
             "<attachment id=\"message_insert_extra_bundle_1\" filename=\"Time:11:07\" "
-            "type=\"text/plain\">【当前时间】 2026-06-22 11:07:21</attachment>"
+            "type=\"text/plain\">【当前时间】 2026-06-22 11:07:21\n"
+            "【相关记忆】 查询: 测试\n快照: 无命中</attachment>"
+            "<workspace_attachment><workspace_context>工作区结构无变化。</workspace_context></workspace_attachment>"
         ),
         assistant_message={"role": "assistant", "content": "Haven这句回复也要进保险箱"},
         model="model-a",
@@ -817,6 +819,8 @@ def test_gateway_mirrors_successful_turn_to_raw_events(monkeypatch, test_config,
     assert user_raw["text"] == "小雨这句原文要进保险箱"
     assert "attachment" not in user_raw["text"]
     assert "当前时间" not in user_raw["text"]
+    assert "相关记忆" not in user_raw["text"]
+    assert "workspace" not in user_raw["text"]
 
 
 def test_gateway_skips_tool_only_assistant_turn_for_short_and_raw_tables(
@@ -4480,6 +4484,123 @@ def test_gateway_uses_user_text_before_operit_extra_attachment_for_recall(
     assert "小橘床边玩具" in content
     assert "message_insert_extra_bundle_177757652229" in content
     assert content.endswith("猫咪最近又干了什么？" + operit_extra)
+
+
+def test_gateway_operit_context_rewrite_splits_text_attachment_when_enabled(
+    monkeypatch,
+    test_config,
+    bucket_mgr,
+):
+    cat_id = _create_bucket(
+        bucket_mgr,
+        content="小橘昨晚把玩具叼到床边，等小雨夸她。",
+        name="小橘床边玩具",
+        hours_ago=24,
+    )
+    app, _, _, captured = _build_service(
+        monkeypatch,
+        _gateway_config(
+            test_config,
+            operit_context_rewrite_enabled=True,
+            recent_context_budget=0,
+            current_inner_state_interval_rounds=0,
+        ),
+        bucket_mgr,
+        embedding_results=[(cat_id, 0.96)],
+    )
+    operit_extra = (
+        ' <attachment id="message_insert_extra_bundle_177757652229" '
+        'filename="Time:02:58 01/2026/6" type="text/plain" size="104">'
+        "【角色卡】\nHaven 会读取固定角色设定。\n\n"
+        "【当前时间】\n2026-06-01 02:58:42 时区: Asia/Shanghai\n\n"
+        "【相关记忆】 查询: 猫咪最近又干了什么？\n"
+        "快照: - 上限: 3 命中数量: 0 当前没有命中的记忆"
+        "</attachment>"
+        "<workspace_attachment><workspace_context>工作区结构无变化。</workspace_context></workspace_attachment>"
+    )
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/chat/completions",
+            headers={
+                "Authorization": "Bearer gateway-secret",
+                "X-Ombre-Session-Id": "sess-operit-extra-rewrite",
+            },
+            json={"messages": [{"role": "user", "content": "猫咪最近又干了什么？" + operit_extra}]},
+        )
+
+    assert response.status_code == 200
+    messages = captured[0]["json"]["messages"]
+    joined = _joined_message_content(messages)
+    user_content = next(str(message["content"]) for message in messages if message.get("role") == "user")
+    assert "Recalled Memory" in joined
+    assert "小橘床边玩具" in joined
+    assert "Operit Stable Context" in joined
+    assert "角色卡" in joined
+    assert "固定角色设定" in joined
+    assert "Operit Activity Context" in user_content
+    assert "当前时间" in user_content
+    assert "相关记忆" in user_content
+    assert "工作区结构无变化" in user_content
+    assert "message_insert_extra_bundle_177757652229" not in joined
+    assert "workspace_attachment" not in joined
+    assert user_content.endswith("Current user message:\n猫咪最近又干了什么？")
+
+
+def test_gateway_operit_context_rewrite_skips_tool_protocol(
+    monkeypatch,
+    test_config,
+    bucket_mgr,
+):
+    app, _, _, captured = _build_service(
+        monkeypatch,
+        _gateway_config(
+            test_config,
+            operit_context_rewrite_enabled=True,
+            recent_context_budget=0,
+            current_inner_state_interval_rounds=0,
+        ),
+        bucket_mgr,
+        embedding_results=[],
+    )
+    operit_extra = (
+        ' <attachment id="message_insert_extra_bundle_177757652240" '
+        'filename="Time:02:58 01/2026/6" type="text/plain" size="104">'
+        "【当前时间】\n2026-06-01 02:58:42 时区: Asia/Shanghai\n"
+        "</attachment>"
+    )
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/chat/completions",
+            headers={
+                "Authorization": "Bearer gateway-secret",
+                "X-Ombre-Session-Id": "sess-operit-tool-skip",
+            },
+            json={
+                "messages": [
+                    {"role": "user", "content": "先查一下"},
+                    {
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "call_1",
+                                "type": "function",
+                                "function": {"name": "lookup", "arguments": "{}"},
+                            }
+                        ],
+                    },
+                    {"role": "tool", "tool_call_id": "call_1", "content": "工具返回"},
+                    {"role": "user", "content": "继续" + operit_extra},
+                ]
+            },
+        )
+
+    assert response.status_code == 200
+    joined = _joined_message_content(captured[0]["json"]["messages"])
+    assert "message_insert_extra_bundle_177757652240" in joined
+    assert "Operit Activity Context" not in joined
 
 
 def test_gateway_body_query_injects_moment_chain(
