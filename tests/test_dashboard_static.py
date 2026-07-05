@@ -314,12 +314,15 @@ def test_dashboard_keeps_compact_legacy_filter_row_and_compatible_filters():
     assert "label: '画像'" not in build_block
     assert "filters.onclick = function(e)" in build_block
     assert "filters.addEventListener" not in build_block
+    assert "function isSurfaceableBucket(bucket)" in html
     assert "currentFilter === 'profile'" not in filter_block
     assert "currentFilter === 'tag:self_anchor'" in filter_block
+    assert "currentFilter === 'unresolved') return buckets.filter(isSurfaceableBucket)" in filter_block
+    assert "type === 'archived'" in html
+    assert "bucket.digested || meta.digested" in html
+    assert "isSurfaceableBucket(b) ? '✓' : '—'" in html
     assert "currentFilter.startsWith('canonical_domain:')" in filter_block
     assert "currentFilter.startsWith('legacy_domain:')" in filter_block
-    assert "&& !isDailyImpressionBucket(b)" in filter_block
-    assert "&& !isSelfAnchorBucket(b)" in filter_block
 
 
 def test_dashboard_bucket_sort_toggle_uses_created_time_or_weight():
