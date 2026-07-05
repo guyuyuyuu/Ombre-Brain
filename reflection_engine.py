@@ -808,7 +808,8 @@ class ReflectionEngine:
                 "diary_memory": {"status": "skipped", "reason": "no_materials"},
             }
 
-        if self.client:
+        reflect_client, _, _ = self._reflect_model_client()
+        if reflect_client:
             result = await self._api_reflect(period, key, materials)
         else:
             result = self._fallback_reflection(period, key, materials)
@@ -1353,14 +1354,21 @@ class ReflectionEngine:
         return list(deduped.values())
 
     async def _api_reflect(self, period: str, key: str, materials: dict) -> dict:
+        client, model, use_dehydration = self._reflect_model_client()
+        if not client or not model:
+            return self._fallback_reflection(period, key, materials)
         payload = {"period": period, "date": key, **materials}
-        response = await self.client.chat.completions.create(
-            model=self.model,
+        response = await client.chat.completions.create(
+            model=model,
             messages=[
                 {"role": "system", "content": self._reflect_prompt()},
                 {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
             ],
-            **self._completion_options(max_tokens=self.max_tokens, temperature=self.temperature),
+            **self._completion_options(
+                max_tokens=self.max_tokens,
+                temperature=self.temperature,
+                thinking_mode="" if use_dehydration else None,
+            ),
         )
         raw = response.choices[0].message.content if response.choices else ""
         return self._parse_json_object(raw or "") or self._fallback_reflection(period, key, materials)
@@ -1709,6 +1717,14 @@ class ReflectionEngine:
         else:
             model = self.model
         return client, str(model or "").strip(), use_daily_client
+
+    def _reflect_model_client(self) -> tuple[Any, str, bool]:
+        dehy_client = self._daily_dehydration_client()
+        if dehy_client and self.dehydration_model:
+            return dehy_client, self.dehydration_model, True
+        if self.client and self.model:
+            return self.client, str(self.model or "").strip(), False
+        return None, "", False
 
     def _normalize_daily_chat_memory_summary(
         self,

@@ -594,6 +594,52 @@ async def test_reflect_daily_creates_relationship_weather_feel(test_config):
 
 
 @pytest.mark.asyncio
+async def test_reflect_daily_prefers_dehydration_model_when_configured(test_config):
+    cfg = _no_api_config(test_config)
+    bucket_mgr = BucketManager(cfg)
+    engine = ReflectionEngine(cfg)
+    await _create_daily_memories(bucket_mgr)
+
+    cheap_response = json.dumps(
+        {
+            "title": "便宜模型日印象",
+            "content": "这段文字不应该被写入。",
+            "valence": 0.3,
+            "arousal": 0.2,
+            "confidence": 0.4,
+        },
+        ensure_ascii=False,
+    )
+    dehy_response = json.dumps(
+        {
+            "title": "脱水模型日印象",
+            "content": "日印象这次由脱水模型生成，材料来自当天记忆。",
+            "valence": 0.6,
+            "arousal": 0.3,
+            "confidence": 0.8,
+            "tags": ["dehydration_reflection"],
+        },
+        ensure_ascii=False,
+    )
+    engine.client = RecordingChatClient(cheap_response)
+    engine.model = "cheap-reflection-model"
+    engine.dehydration_client = RecordingChatClient(dehy_response)
+    engine.daily_activity_summary_dehydration_client = engine.dehydration_client
+    engine.dehydration_model = "dehydration-model"
+
+    now = datetime(2026, 5, 21, 20, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
+    result = await engine.reflect("daily", bucket_mgr, force=True, now=now)
+    bucket = await bucket_mgr.get(result["id"])
+
+    assert result["status"] == "created"
+    assert "脱水模型生成" in bucket["content"]
+    assert "dehydration_reflection" in bucket["metadata"]["tags"]
+    assert engine.client.calls == []
+    assert engine.dehydration_client.calls[0]["model"] == "dehydration-model"
+    assert "extra_body" not in engine.dehydration_client.calls[0]
+
+
+@pytest.mark.asyncio
 async def test_reflect_daily_can_be_disabled(test_config):
     cfg = _no_api_config(test_config)
     cfg["reflection"]["daily_enabled"] = False
