@@ -7706,6 +7706,7 @@ async function saveConfig(persist, persistEnv) {
   var activeTab = document.querySelector('.tab.active');
   var activeTarget = activeTab ? activeTab.dataset.tab : '';
   var candidate = {};
+  var upstreamKeyValueCounts = [];
   if (activeTarget === 'config') {
     candidate.dehydration = {
       model: document.getElementById('cfg-dehy-model').value,
@@ -7776,6 +7777,29 @@ async function saveConfig(persist, persistEnv) {
       return;
     }
     var originalUpstreams = ((configSnapshot.gateway || {}).upstreams) || [];
+    var originalUpstreamByName = {};
+    originalUpstreams.forEach(function(upstream) {
+      if (upstream && upstream.name) originalUpstreamByName[upstream.name] = upstream;
+    });
+    var missingKeyValueProviders = [];
+    upstreamsResult.upstreams.forEach(function(upstream) {
+      var keyValueCount = Array.isArray(upstream.api_key_values) ? upstream.api_key_values.length : 0;
+      upstreamKeyValueCounts.push({ name: upstream.name || '未命名上游', count: keyValueCount });
+      var original = originalUpstreamByName[upstream.name] || {};
+      var knownKeyCount = Number(original.key_count || 0);
+      var hasHiddenKey = Boolean(original.has_direct_api_key);
+      if (persistEnv && upstream.api_key_envs && upstream.api_key_envs.length && !keyValueCount && !knownKeyCount && !hasHiddenKey) {
+        missingKeyValueProviders.push(upstream.name || '未命名上游');
+      }
+    });
+    if (missingKeyValueProviders.length) {
+      setConfigStatus(
+        '<span style="color:var(--negative)">✗ 保存密钥到 .env 时，这些未 ready 上游的 Key values 读取到 0 行: ' +
+        esc(missingKeyValueProviders.join(', ')) +
+        '</span>'
+      );
+      return;
+    }
     if (upstreamsResult.upstreams.length || originalUpstreams.length) {
       candidate.gateway = { upstreams: upstreamsResult.upstreams };
     }
@@ -7910,7 +7934,13 @@ async function saveConfig(persist, persistEnv) {
     if (!res) return;
     var result = await res.json();
     if (result.ok) {
-      setConfigStatus('<span style="color:var(--positive)">✓ 已更新: ' + esc((result.updated || []).join(', ')) + '</span>');
+      var statusText = '✓ 已更新: ' + (result.updated || []).join(', ');
+      if (activeTarget === 'upstream-config' && persistEnv && upstreamKeyValueCounts.length) {
+        statusText += '；Key values 读取: ' + upstreamKeyValueCounts.map(function(item) {
+          return item.name + '=' + item.count + '行';
+        }).join(', ');
+      }
+      setConfigStatus('<span style="color:var(--positive)">' + esc(statusText) + '</span>');
       loadConfig();
     } else {
       setConfigStatus('<span style="color:var(--negative)">✗ ' + esc(result.error || '未知错误') + '</span>');

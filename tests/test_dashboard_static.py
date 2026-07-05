@@ -656,6 +656,10 @@ def test_dashboard_exposes_gateway_upstream_editor():
     assert "var keyValuesText = upstream.api_key_values.join('\\n');" in html
     assert 'id="cfg-upstream-key-values-\' + index + \'" placeholder="可选：一行一个真实 key，对应上面的 env 名">\' + esc(keyValuesText) + \'</textarea>' in html
     assert "upstream.api_key_values = [];" in html
+    assert "var upstreamKeyValueCounts = [];" in save_block
+    assert "missingKeyValueProviders.push(upstream.name || '未命名上游');" in save_block
+    assert "保存密钥到 .env 时，这些未 ready 上游的 Key values 读取到 0 行" in save_block
+    assert "Key values 读取: " in html
     assert "document.getElementById('upstream-config-view').style.display = target === 'upstream-config' ? '' : 'none';" in html
     assert "if (target === 'upstream-config') loadConfig();" in html
     assert "if (activeTarget === 'upstream-config')" in save_block
