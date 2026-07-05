@@ -10528,7 +10528,12 @@ async def api_search(request):
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
-def _raw_ingest_events_from_body(body: dict) -> list[dict]:
+def _raw_ingest_events_from_body(
+    body: dict,
+    *,
+    default_session_id: str = "",
+    default_conversation_id: str = "",
+) -> list[dict]:
     if not isinstance(body, dict):
         return []
     if isinstance(body.get("events"), list):
@@ -10540,10 +10545,12 @@ def _raw_ingest_events_from_body(body: dict) -> list[dict]:
     else:
         events = []
 
+    fallback_session_id = str(default_session_id or "").strip()
+    fallback_conversation_id = str(default_conversation_id or "").strip() or fallback_session_id
     common = {
         "source": body.get("source"),
-        "conversation_id": body.get("conversation_id"),
-        "session_id": body.get("session_id"),
+        "conversation_id": body.get("conversation_id") or fallback_conversation_id,
+        "session_id": body.get("session_id") or fallback_session_id,
         "client": body.get("client"),
     }
     for event in events:
@@ -10567,7 +10574,12 @@ async def api_ingest_raw(request):
     if not isinstance(body, dict):
         return JSONResponse({"error": "request body must be an object"}, status_code=400)
 
-    events = _raw_ingest_events_from_body(body)
+    header_session_id = str(request.headers.get("X-Ombre-Session-Id") or "").strip()
+    events = _raw_ingest_events_from_body(
+        body,
+        default_session_id=header_session_id,
+        default_conversation_id=header_session_id,
+    )
     if not events:
         return JSONResponse({"error": "missing events"}, status_code=400)
 

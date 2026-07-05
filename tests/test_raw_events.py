@@ -6,10 +6,10 @@ from raw_events import RawEventStore
 
 
 class DummyRequest:
-    def __init__(self, body=None, query_params=None):
+    def __init__(self, body=None, query_params=None, headers=None):
         self._body = body
         self.query_params = query_params or {}
-        self.headers = {}
+        self.headers = headers or {}
         self.cookies = {}
 
     async def json(self):
@@ -150,3 +150,37 @@ async def test_raw_event_http_ingest_and_search(monkeypatch, tmp_path):
     assert search_response.status_code == 200
     assert search_payload["count"] == 1
     assert search_payload["items"][0]["text"] == "我把暗号收进原文保险箱。"
+
+
+@pytest.mark.asyncio
+async def test_raw_event_http_ingest_uses_session_header_when_body_omits_session(monkeypatch, tmp_path):
+    import server
+
+    store = RawEventStore(_config(tmp_path))
+    monkeypatch.setattr(server, "raw_event_store", store)
+    monkeypatch.setattr(server, "_require_dashboard_auth", lambda request: None)
+
+    ingest_response = await server.api_ingest_raw(
+        DummyRequest(
+            {
+                "source": "script",
+                "events": [
+                    {
+                        "source_event_id": "header-session-1",
+                        "role": "user",
+                        "text": "这条原文应该跟随请求头里的窗口。",
+                    }
+                ],
+            },
+            headers={"X-Ombre-Session-Id": "header-window"},
+        )
+    )
+    ingest_payload = json.loads(ingest_response.body)
+
+    assert ingest_response.status_code == 200
+    assert ingest_payload["inserted"] == 1
+
+    search = store.search("请求头里的窗口", source="script", session_id="header-window")
+    assert search["count"] == 1
+    assert search["items"][0]["session_id"] == "header-window"
+    assert search["items"][0]["conversation_id"] == "header-window"
