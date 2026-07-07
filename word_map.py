@@ -69,6 +69,10 @@ DEFAULT_WORD_MAP_STOPWORDS = {
     "key_event",
     "memory",
     "moment",
+    "ombre",
+    "ombre brain",
+    "ombre-brain",
+    "ombre_brain",
     "original",
     "pending",
     "permanent",
@@ -86,6 +90,7 @@ DEFAULT_WORD_MAP_STOPWORDS = {
     "status",
     "task_status_signal",
     "todo",
+    "vps",
     "weekly_impression",
     "wish",
     "上下文",
@@ -93,9 +98,18 @@ DEFAULT_WORD_MAP_STOPWORDS = {
     "内容",
     "回忆",
     "当前",
+    "自动记忆",
     "最近",
     "状态",
+    "脱水模型",
     "记忆",
+}
+DEFAULT_WORD_MAP_HIDDEN_SUBSTRINGS = {
+    "ombre-brain",
+    "ombre_brain",
+    "ombrebrain",
+    "自动记忆",
+    "脱水模型",
 }
 
 DEFAULT_STOPWORD_PREFIXES = ("flavor_", "profile_", "predicate_", "task_")
@@ -182,6 +196,10 @@ DEFAULT_WORD_MAP_OVERVIEW_STOPWORDS = {
     "haven_chat_endpoint",
     "key_event",
     "naming_day",
+    "ombre",
+    "ombre brain",
+    "ombre-brain",
+    "ombre_brain",
     "profile",
     "project_state",
     "relationship_anchor",
@@ -189,21 +207,20 @@ DEFAULT_WORD_MAP_OVERVIEW_STOPWORDS = {
     "ritual",
     "signal",
     "stable_preference",
+    "vps",
+    "自动记忆",
+    "脱水模型",
 }
 DEFAULT_OVERVIEW_STOPWORD_PREFIXES = DEFAULT_STOPWORD_PREFIXES
 DEFAULT_OVERVIEW_ALIASES = {
     "darkroom": "暗房",
     "darkroom door": "暗房",
-    "ombre": "Ombre-Brain",
-    "ombre-brain": "Ombre-Brain",
-    "ombre_brain": "Ombre-Brain",
     "mcp": "MCP",
     "dashboard": "Dashboard",
     "codex": "Codex",
 }
 DEFAULT_OVERVIEW_PRIORITY_TERMS = {
     "darkroom",
-    "ombre-brain",
     "recall_cues",
     "暗房",
     "忱孚",
@@ -213,9 +230,7 @@ DEFAULT_OVERVIEW_PRIORITY_TERMS = {
     "第一行代码",
     "记忆不是表演",
 }
-DEFAULT_OVERVIEW_HUB_TERMS = {
-    "ombre-brain",
-}
+DEFAULT_OVERVIEW_HUB_TERMS = ()
 DEFAULT_WEAK_HINT_TERMS = {
     "人机恋",
     "恋爱",
@@ -976,6 +991,8 @@ class WordMapStore:
             return ""
         if term in self.stopwords or term in self.private_terms:
             return ""
+        if _has_hidden_substring(term):
+            return ""
         if _is_standalone_time_term(term):
             return ""
         if any(term.startswith(prefix) for prefix in self.stopword_prefixes):
@@ -1132,6 +1149,8 @@ class WordMapStore:
     def _is_overview_term_hidden(self, value: Any) -> bool:
         term = _normalize_term(value)
         if not term:
+            return True
+        if _has_hidden_substring(term):
             return True
         if "日印象" in term or "relationship_weather" in term:
             return True
@@ -1391,6 +1410,11 @@ def _normalize_term(value: Any) -> str:
 
 def _compact_term(value: Any) -> str:
     return re.sub(r"[^0-9a-z\u4e00-\u9fff_.:-]+", "", str(value or "").strip().lower())
+
+
+def _has_hidden_substring(value: Any) -> bool:
+    key = _compact_term(value)
+    return bool(key and any(item in key for item in DEFAULT_WORD_MAP_HIDDEN_SUBSTRINGS))
 
 
 def _is_standalone_time_term(value: Any) -> bool:

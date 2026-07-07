@@ -366,7 +366,7 @@ def test_word_map_overview_hides_meta_and_broad_terms_without_hiding_cards(tmp_p
     assert all("日印象" not in term for term in overview_terms)
     assert "暗房" in overview_terms
     assert "darkroom" not in overview_terms
-    assert "Ombre-Brain" in overview_terms
+    assert "Ombre-Brain" not in overview_terms
     assert "流星" in overview_terms
     assert "暗房机制上线" not in overview_terms
     assert "Ombre-Brain首次外部验证" not in overview_terms
@@ -376,8 +376,6 @@ def test_word_map_overview_hides_meta_and_broad_terms_without_hiding_cards(tmp_p
     darkroom_node = next(node for node in overview if node["term"] == "暗房")
     assert "darkroom" in darkroom_node["aliases"]
     assert "暗房机制上线" in darkroom_node["aliases"]
-    ombre_node = next(node for node in overview if node["term"] == "Ombre-Brain")
-    assert "Ombre-Brain首次外部验证" in ombre_node["aliases"]
     assert all("overview_score" in node for node in overview)
 
     overview_edge_terms = {
@@ -392,14 +390,20 @@ def test_word_map_overview_hides_meta_and_broad_terms_without_hiding_cards(tmp_p
 
 
 def test_word_map_overview_saturates_hub_terms_and_boosts_non_hub_edges(tmp_path):
-    store = WordMapStore(_config(tmp_path))
+    store = WordMapStore(
+        _config(
+            tmp_path,
+            overview_aliases={"gateway": "Gateway"},
+            overview_hub_terms=["Gateway"],
+        )
+    )
     store.rebuild(
         [
             _bucket(
-                f"ombre-{index}",
-                f"Ombre-Brain 模块 {index} 记录 Gateway 和机制边。",
-                name=f"Ombre-Brain模块{index}",
-                keywords=["Ombre-Brain", "Gateway"],
+                f"gateway-{index}",
+                f"Gateway 模块 {index} 记录 API 和机制边。",
+                name=f"Gateway模块{index}",
+                keywords=["Gateway", "API"],
                 domain=["AI", "编程"],
             )
             for index in range(12)
@@ -414,13 +418,13 @@ def test_word_map_overview_saturates_hub_terms_and_boosts_non_hub_edges(tmp_path
         ]
     )
 
-    ombre_node = next(node for node in store.list_nodes(50) if node["term"] == "Ombre-Brain")
-    assert ombre_node["bucket_count"] == 12
-    assert store._overview_hub_saturation_factor("Ombre-Brain", ombre_node["bucket_count"]) < 1.0
+    gateway_node = next(node for node in store.list_nodes(50) if node["term"] == "Gateway")
+    assert gateway_node["bucket_count"] == 12
+    assert store._overview_hub_saturation_factor("Gateway", gateway_node["bucket_count"]) < 1.0
     assert store._overview_hub_saturation_factor("暗房", 12) == 1.0
 
     non_hub_score = store._overview_edge_score({"term_a": "暗房", "term_b": "显影", "weight": 1, "bucket_count": 1})
-    hub_score = store._overview_edge_score({"term_a": "Ombre-Brain", "term_b": "显影", "weight": 1, "bucket_count": 1})
+    hub_score = store._overview_edge_score({"term_a": "Gateway", "term_b": "显影", "weight": 1, "bucket_count": 1})
     assert non_hub_score > hub_score
 
 
@@ -521,6 +525,9 @@ def test_word_map_excludes_structural_tags_and_identity_names(tmp_path):
                     "flavor_soft",
                     "testai_favorite",
                     "haven_favorite",
+                    "topic:自动记忆",
+                    "entity:Ombre-Brain",
+                    "entity:VPS",
                     "topic:咖啡风味",
                     "entity:咖啡机",
                 ],
@@ -533,6 +540,10 @@ def test_word_map_excludes_structural_tags_and_identity_names(tmp_path):
                     "咖啡机",
                     "testai_favorite",
                     "haven_favorite",
+                    "自动记忆",
+                    "脱水模型",
+                    "Ombre-Brain",
+                    "VPS",
                 ],
                 domain=["memory"],
             ),
@@ -556,6 +567,10 @@ def test_word_map_excludes_structural_tags_and_identity_names(tmp_path):
     assert "flavor_soft" not in terms
     assert "testai_favorite" not in terms
     assert "haven_favorite" not in terms
+    assert "自动记忆" not in terms
+    assert "脱水模型" not in terms
+    assert "Ombre-Brain" not in terms
+    assert "VPS" not in terms
     assert "咖啡风味" in terms
     assert "咖啡机" in terms
     assert "testai" in store.overview_hub_terms
