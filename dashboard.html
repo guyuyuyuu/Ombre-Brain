@@ -7171,6 +7171,8 @@ function renderGatewayInjectionItem(item) {
   var structuralActivation = gatewayStructuralActivationSummary(payload);
   var memoryEdgeActivation = gatewayMemoryEdgeActivationSummary(payload);
   var momentChunkShadow = gatewayMomentChunkShadowSummary(payload);
+  var dynamicAnchor = gatewayDynamicAnchorSummary(payload);
+  var semanticRescue = gatewaySemanticRescueSummary(payload);
   var dreamStatus = payload.dream_context_status || {};
   var chips = [
     { text: 'round ' + (row.round_id || '—') },
@@ -7205,6 +7207,8 @@ function renderGatewayInjectionItem(item) {
       (structuralActivation ? '<div class="gateway-injection-line"><span class="label">activation shadow:</span> ' + esc(structuralActivation) + '</div>' : '') +
       (memoryEdgeActivation ? '<div class="gateway-injection-line"><span class="label">memory edge shadow:</span> ' + esc(memoryEdgeActivation) + '</div>' : '') +
       (momentChunkShadow ? '<div class="gateway-injection-line"><span class="label">moment chunk shadow:</span> ' + esc(momentChunkShadow) + '</div>' : '') +
+      (dynamicAnchor ? '<div class="gateway-injection-line"><span class="label">anchor gate:</span> ' + esc(dynamicAnchor) + '</div>' : '') +
+      (semanticRescue ? '<div class="gateway-injection-line"><span class="label">semantic rescue:</span> ' + esc(semanticRescue) + '</div>' : '') +
     '</div>' +
     (contextPreview ? '<div class="gateway-context-preview">' + esc(contextPreview) + '</div>' : '') +
   '</div>';
@@ -7301,6 +7305,49 @@ function gatewayMomentChunkShadowSummary(payload) {
       ' → ' + (bucket.shadow_content_moment_count || 0) +
       (sizes ? ' [' + sizes + ']' : '');
   }).slice(0, 4).join(' / ');
+}
+
+function gatewayDynamicAnchorSummary(payload) {
+  var planner = payload.query_planner_debug || {};
+  var anchor = planner.dynamic_anchor || {};
+  var discriminative = Array.isArray(anchor.discriminative_terms) ? anchor.discriminative_terms : [];
+  var required = Array.isArray(anchor.required_terms) ? anchor.required_terms : [];
+  var categories = Array.isArray(anchor.category_terms) ? anchor.category_terms : [];
+  var aliases = Array.isArray(anchor.retrieval_alias_hits) ? anchor.retrieval_alias_hits : [];
+  if (!discriminative.length && !categories.length && !aliases.length) return '';
+  var parts = [];
+  if (required.length) parts.push('required ' + required.join('/'));
+  else if (discriminative.length) parts.push('anchors ' + discriminative.join('/'));
+  if (anchor.category_overview && categories.length) {
+    parts.push('category overview ' + categories.join('/'));
+  } else if (categories.length) {
+    parts.push('category ' + categories.join('/'));
+  }
+  if (aliases.length) {
+    parts.push('alias ' + aliases.slice(0, 3).map(function(hit) {
+      var name = hit.bucket_name || hit.bucket_id || 'bucket';
+      var terms = Array.isArray(hit.terms) ? hit.terms.join('/') : '';
+      return name + (terms ? ' [' + terms + ']' : '');
+    }).join(' / '));
+  }
+  return parts.join(' · ');
+}
+
+function gatewaySemanticRescueSummary(payload) {
+  var planner = payload.query_planner_debug || {};
+  var rescue = planner.semantic_rescue || {};
+  if (!rescue.enabled && !rescue.called && !rescue.error) return '';
+  var parts = [];
+  if (rescue.called) {
+    var candidates = Array.isArray(rescue.candidate_bucket_ids) ? rescue.candidate_bucket_ids : [];
+    parts.push('called' + (candidates.length ? ' [' + candidates.slice(0, 3).join('/') + ']' : ''));
+  }
+  if (rescue.selected_bucket_id) parts.push('selected ' + rescue.selected_bucket_id);
+  if (rescue.matched_axis) parts.push('axis ' + rescue.matched_axis);
+  if (rescue.direct_evidence_span) parts.push('evidence ' + String(rescue.direct_evidence_span).slice(0, 180));
+  if (rescue.error) parts.push('error ' + rescue.error);
+  if (!rescue.selected_bucket_id && rescue.skip_reason) parts.push('blocked ' + rescue.skip_reason);
+  return parts.join(' · ');
 }
 
 function gatewayContextPreview(payload) {

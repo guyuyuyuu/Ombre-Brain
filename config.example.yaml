@@ -394,6 +394,10 @@ gateway:
   query_planner_max_queries: 3
   query_planner_max_tokens: 360
   query_planner_supplemental_semantic: false # planner short queries use keyword/exact by default; avoids repeated embedding calls
+  semantic_rescue_enabled: false # optional last gate for semantic-only candidates; validates an exact evidence span
+  semantic_rescue_candidate_limit: 3 # one batched cheap-model call, top 1-3 semantic candidates
+  semantic_rescue_max_tokens: 220
+  semantic_rescue_timeout_seconds: 4
   memory_detail_recall_enabled: false # optional internal [memory_detail ids="..."] retry for admitted bucket ids
   memory_detail_recall_max_ids: 3
   memory_detail_recall_budget: 1200
