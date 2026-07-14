@@ -34,5 +34,6 @@ ENV OMBRE_TRANSPORT=streamable-http
 ENV OMBRE_BUCKETS_DIR=/app/buckets
 
 EXPOSE 8000
+EXPOSE 8010
 
-CMD ["python", "server.py"]
+CMD ["python", "launcher.py"]
