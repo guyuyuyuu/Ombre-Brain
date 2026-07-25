@@ -121,7 +121,11 @@ class DreamEngine:
             os.environ.get("OMBRE_DREAM_MODEL", "")
             or str(cfg.get("model") or "deepseek-v4-flash")
         )
-        self.api_key = os.environ.get("OMBRE_DREAM_API_KEY", "") or str(cfg.get("api_key") or "")
+        self.api_key = (
+            os.environ.get("OMBRE_DREAM_API_KEY", "")
+            or str(cfg.get("api_key") or "")
+            or str(config.get("dehydration", {}).get("api_key") or "")
+        )
         self.thinking_mode = self._normalize_thinking_mode(cfg.get("thinking_mode", "disabled"))
         self.temperature = float(cfg.get("temperature", 0.85))
         self.max_tokens = int(cfg.get("max_tokens", 900))
