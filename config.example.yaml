@@ -90,7 +90,7 @@ memory_write_gate:
 dehydration:
   # Supports any OpenAI-compatible API: DeepSeek / Ollama / LM Studio / vLLM / Gemini etc.
   # 支持所有 OpenAI 兼容 API：DeepSeek / Ollama / LM Studio / vLLM / Gemini 等
-  model: "deepseek-chat"
+  model: "deepseek-v4-flash"
   base_url: "https://api.deepseek.com/v1"
   # Optional thinking mode override for DeepSeek v4 models:
   #   disabled = non-thinking / enabled = thinking / empty = provider default
@@ -330,13 +330,11 @@ gateway:
   #     # api_key_envs:
   #     #   - "OMBRE_GATEWAY_DEEPSEEK_API_KEY_1"
   #     #   - "OMBRE_GATEWAY_DEEPSEEK_API_KEY_2"
-  #     default_model: "deepseek-chat"
+  #     default_model: "deepseek-v4-flash"
   #     prompt_cache: ""  # DeepSeek uses automatic prefix cache / DeepSeek 使用自动前缀缓存
   #     models:
-  #       - "deepseek-chat"
-  #       - "deepseek-reasoner"
-  #       - id: "deepseek-a/deepseek-v4"
-  #         upstream_model: "deepseek-v4"
+  #       - "deepseek-v4-flash"
+  #       - "deepseek-v4-pro"
   #   - name: "siliconflow"
   #     protocol: "openai"
   #     base_url: "https://api.siliconflow.cn/v1"
@@ -579,7 +577,7 @@ persona:
   profile_id: "main_profile"
   mode: "llm"
   base_url: "https://api.deepseek.com/v1"
-  model: "deepseek-chat"
+  model: "deepseek-v4-flash"
   # Optional thinking mode override for DeepSeek v4 models:
   #   disabled = non-thinking / enabled = thinking / empty = provider default
   thinking_mode: ""
