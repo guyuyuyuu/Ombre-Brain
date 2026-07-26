@@ -744,19 +744,19 @@ class Dehydrator:
             ),
         )
         if not response.choices:
-            raise RuntimeError("API 日记整理返回空结果 (debug: no choices in response)")
+            raise RuntimeError("API 日记整理无返回内容")
         message = response.choices[0].message
         raw = message.content or ""
         if not raw.strip():
             reasoning = getattr(message, "reasoning_content", None)
-            raise RuntimeError(
-                f"API 日记整理返回空结果 (debug: content empty, "
-                f"reasoning_content={'present len=' + str(len(reasoning)) if reasoning else 'absent'}, "
-                f"finish_reason={getattr(response.choices[0], 'finish_reason', None)})"
-            )
+            if reasoning:
+                raise RuntimeError(
+                    "API 只返回了思考过程，正文为空（可能是 thinking_mode 未生效）"
+                )
+            raise RuntimeError("API 返回内容为空")
         items = self._parse_digest(raw)
         if not items:
-            raise RuntimeError(f"API 日记整理返回空结果 (debug: parse failed, raw={raw[:300]!r})")
+            raise RuntimeError(f"API 判断这段内容没有可提炼的记忆点：{raw[:200]!r}")
         return items
 
     # ---------------------------------------------------------
