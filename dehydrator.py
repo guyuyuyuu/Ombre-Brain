@@ -744,11 +744,20 @@ class Dehydrator:
             ),
         )
         if not response.choices:
-            return []
-        raw = response.choices[0].message.content or ""
+            raise RuntimeError("API 日记整理返回空结果 (debug: no choices in response)")
+        message = response.choices[0].message
+        raw = message.content or ""
         if not raw.strip():
-            return []
-        return self._parse_digest(raw)
+            reasoning = getattr(message, "reasoning_content", None)
+            raise RuntimeError(
+                f"API 日记整理返回空结果 (debug: content empty, "
+                f"reasoning_content={'present len=' + str(len(reasoning)) if reasoning else 'absent'}, "
+                f"finish_reason={getattr(response.choices[0], 'finish_reason', None)})"
+            )
+        items = self._parse_digest(raw)
+        if not items:
+            raise RuntimeError(f"API 日记整理返回空结果 (debug: parse failed, raw={raw[:300]!r})")
+        return items
 
     # ---------------------------------------------------------
     # Parse diary digest result with safety checks
